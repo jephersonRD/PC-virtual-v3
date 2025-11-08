@@ -201,16 +201,20 @@ jobs:
           }
 ```
 
-### 5️⃣ Sigue los pasos del video de YouTube
+## 🎥 Video Tutorial
 
 <div align="center">
 
-[![Tutorial VM v3](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://www.youtube.com/watch?v=VIDEO_ID)
+<a href="https://www.youtube.com/watch?v=6KDdo7-oPvY" target="_blank">
+  <img src="https://img.youtube.com/vi/6KDdo7-oPvY/maxresdefault.jpg" 
+       alt="Ver el video tutorial en YouTube" width="70%">
+</a>
 
-*Haz clic en la imagen para ver el tutorial completo*
+<br><br>
+
+**🎬 Haz clic en la imagen para ver el tutorial completo en YouTube**
 
 </div>
-
 ---
 
 ## ❓ Preguntas Frecuentes
