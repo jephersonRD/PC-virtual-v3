@@ -1,0 +1,282 @@
+name: 🖥️ RDP 24/7
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Se ejecuta automáticamente cada 5 días para mantener 24/7
+    - cron: '0 */120 * * *'
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 35000  # ~24 días (cerca del máximo de GitHub)
+
+    steps:
+      - name: 🎯 Inicializando Entorno RDP
+        run: |
+          Write-Host "╔═══════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║     🖥️  INICIANDO SERVIDOR RDP 24/7   ║" -ForegroundColor Cyan
+          Write-Host "╚═══════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "⏰ Inicio: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
+          Write-Host "🔧 Run ID: $env:GITHUB_RUN_ID" -ForegroundColor Yellow
+          Write-Host ""
+
+      - name: ⚙️ Configurar RDP
+        run: |
+          Write-Host "🔧 Configurando Remote Desktop Protocol..." -ForegroundColor Cyan
+          
+          try {
+            # Habilitar RDP
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                               -Name "fDenyTSConnections" -Value 0 -Force
+            Write-Host "  ✅ RDP habilitado" -ForegroundColor Green
+            
+            # Configurar autenticación
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                               -Name "UserAuthentication" -Value 0 -Force
+            Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                               -Name "SecurityLayer" -Value 0 -Force
+            Write-Host "  ✅ Configuración de seguridad aplicada" -ForegroundColor Green
+            
+            # Configurar firewall
+            netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+            netsh advfirewall firewall add rule name="RDP-Tailscale" `
+              dir=in action=allow protocol=TCP localport=3389 | Out-Null
+            Write-Host "  ✅ Regla de firewall creada" -ForegroundColor Green
+            
+            # Reiniciar servicio
+            Restart-Service -Name TermService -Force
+            Write-Host "  ✅ Servicio RDP reiniciado" -ForegroundColor Green
+            Write-Host ""
+          }
+          catch {
+            Write-Host "  ❌ Error en configuración: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: 👤 Crear Usuario RDP
+        run: |
+          Write-Host "👤 Generando credenciales seguras..." -ForegroundColor Cyan
+          
+          try {
+            # Generar contraseña compleja
+            Add-Type -AssemblyName System.Security
+            $charSet = @{
+                Upper   = [char[]](65..90)
+                Lower   = [char[]](97..122)
+                Number  = [char[]](48..57)
+                Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
+            }
+            $rawPassword = @()
+            $rawPassword += $charSet.Upper | Get-Random -Count 4
+            $rawPassword += $charSet.Lower | Get-Random -Count 4
+            $rawPassword += $charSet.Number | Get-Random -Count 4
+            $rawPassword += $charSet.Special | Get-Random -Count 4
+            $password = -join ($rawPassword | Sort-Object { Get-Random })
+            
+            # Crear usuario
+            $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+            New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -ErrorAction Stop | Out-Null
+            Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction Stop
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction Stop
+            
+            Write-Host "  ✅ Usuario creado exitosamente" -ForegroundColor Green
+            
+            # Guardar credenciales
+            echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+            
+            # Verificar creación
+            if (-not (Get-LocalUser -Name "RDP")) {
+                throw "Fallo en verificación de usuario"
+            }
+            Write-Host "  ✅ Usuario verificado" -ForegroundColor Green
+            Write-Host ""
+          }
+          catch {
+            Write-Host "  ❌ Error creando usuario: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: 🌐 Instalar Tailscale
+        run: |
+          Write-Host "🌐 Instalando Tailscale VPN..." -ForegroundColor Cyan
+          
+          try {
+            $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+            $installerPath = "$env:TEMP\tailscale.msi"
+            
+            Write-Host "  📥 Descargando instalador..." -ForegroundColor Yellow
+            Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -ErrorAction Stop
+            
+            Write-Host "  📦 Instalando..." -ForegroundColor Yellow
+            Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+            Remove-Item $installerPath -Force
+            
+            Write-Host "  ✅ Tailscale instalado" -ForegroundColor Green
+            Write-Host ""
+          }
+          catch {
+            Write-Host "  ❌ Error instalando Tailscale: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: 🔗 Conectar a Tailscale
+        run: |
+          Write-Host "🔗 Estableciendo conexión Tailscale..." -ForegroundColor Cyan
+          
+          try {
+            # Conectar Tailscale
+            $hostname = "gh-rdp-$env:GITHUB_RUN_ID"
+            Write-Host "  🏷️  Hostname: $hostname" -ForegroundColor Yellow
+            
+            & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostname
+            
+            # Esperar por IP
+            Write-Host "  ⏳ Esperando asignación de IP..." -ForegroundColor Yellow
+            $tsIP = $null
+            $retries = 0
+            while (-not $tsIP -and $retries -lt 12) {
+                Start-Sleep -Seconds 3
+                $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+                if ($tsIP) { break }
+                $retries++
+                Write-Host "    • Intento $($retries)/12..." -ForegroundColor Gray
+            }
+            
+            if (-not $tsIP) {
+                throw "No se pudo obtener IP de Tailscale"
+            }
+            
+            echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+            Write-Host "  ✅ IP asignada: $tsIP" -ForegroundColor Green
+            Write-Host ""
+          }
+          catch {
+            Write-Host "  ❌ Error conectando Tailscale: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: ✅ Verificar Conectividad RDP
+        run: |
+          Write-Host "✅ Verificando acceso RDP..." -ForegroundColor Cyan
+          
+          try {
+            $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
+            
+            if (-not $testResult.TcpTestSucceeded) {
+                throw "Conexión TCP fallida en puerto 3389"
+            }
+            
+            Write-Host "  ✅ Puerto 3389 accesible" -ForegroundColor Green
+            Write-Host "  ✅ Servidor RDP listo" -ForegroundColor Green
+            Write-Host ""
+          }
+          catch {
+            Write-Host "  ❌ Error verificando conectividad: $_" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: 📋 Generar Resumen de Acceso
+        run: |
+          $summary = @"
+          ## 🎉 Servidor RDP Activo
+          
+          ### 📡 Información de Conexión
+          
+          | Campo | Valor |
+          |-------|-------|
+          | 🌐 **Dirección IP** | ``$env:TAILSCALE_IP`` |
+          | 👤 **Usuario** | ``RDP`` |
+          | 🔑 **Contraseña** | ``$env:RDP_PASSWORD`` |
+          | 🏷️ **Hostname** | ``gh-rdp-$env:GITHUB_RUN_ID`` |
+          | ⏰ **Iniciado** | $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC') |
+          | ⏱️ **Duración Máx** | ~24 días |
+          
+          ### 🔧 Instrucciones de Conexión
+          
+          **Windows:**
+          1. Presiona ``Win + R``
+          2. Escribe: ``mstsc``
+          3. Ingresa la IP: ``$env:TAILSCALE_IP``
+          4. Usa las credenciales de arriba
+          
+          **Linux/Mac:**
+          \`\`\`bash
+          rdesktop $env:TAILSCALE_IP -u RDP -p '$env:RDP_PASSWORD'
+          # O con Remmina/Microsoft Remote Desktop
+          \`\`\`
+          
+          ### ⚠️ Importante
+          - ✅ Asegúrate de estar conectado a Tailscale
+          - ✅ El servidor se mantendrá activo ~24 días
+          - ✅ Se reiniciará automáticamente cada 5 días
+          - ❌ Cancela el workflow manualmente si ya no lo necesitas
+          
+          ### 🛑 Para Detener
+          Cancela este workflow desde Actions → RDP 24/7 → Cancel workflow
+          
+          ---
+          *⚡ Powered by GitHub Actions + Tailscale*
+          "@
+          
+          echo $summary >> $env:GITHUB_STEP_SUMMARY
+
+      - name: 📢 Mostrar Credenciales
+        run: |
+          Write-Host ""
+          Write-Host "╔════════════════════════════════════════════════════════╗" -ForegroundColor Green
+          Write-Host "║                                                        ║" -ForegroundColor Green
+          Write-Host "║              🎉 SERVIDOR RDP ACTIVO 🎉                 ║" -ForegroundColor Green
+          Write-Host "║                                                        ║" -ForegroundColor Green
+          Write-Host "╠════════════════════════════════════════════════════════╣" -ForegroundColor Green
+          Write-Host "║                                                        ║" -ForegroundColor Green
+          Write-Host "║  🌐 IP:        $($env:TAILSCALE_IP.PadRight(35)) ║" -ForegroundColor White
+          Write-Host "║  👤 Usuario:   RDP                                     ║" -ForegroundColor White
+          Write-Host "║  🔑 Password:  $($env:RDP_PASSWORD.PadRight(35)) ║" -ForegroundColor White
+          Write-Host "║                                                        ║" -ForegroundColor Green
+          Write-Host "╠════════════════════════════════════════════════════════╣" -ForegroundColor Green
+          Write-Host "║  ⏰ Tiempo activo: ~24 días máximo                     ║" -ForegroundColor Yellow
+          Write-Host "║  🔄 Auto-reinicio: Cada 5 días                         ║" -ForegroundColor Yellow
+          Write-Host "║                                                        ║" -ForegroundColor Green
+          Write-Host "╚════════════════════════════════════════════════════════╝" -ForegroundColor Green
+          Write-Host ""
+
+      - name: ♾️ Mantener Conexión Activa 24/7
+        run: |
+          Write-Host "♾️  Modo 24/7 Activado - Servidor corriendo indefinidamente..." -ForegroundColor Magenta
+          Write-Host ""
+          Write-Host "💡 Consejos:" -ForegroundColor Cyan
+          Write-Host "   • Revisa el 'Summary' de este workflow para ver las credenciales" -ForegroundColor Gray
+          Write-Host "   • Este workflow se reiniciará automáticamente cada 5 días" -ForegroundColor Gray
+          Write-Host "   • Para detener: Cancela manualmente desde GitHub Actions" -ForegroundColor Gray
+          Write-Host ""
+          
+          $startTime = Get-Date
+          $iteration = 0
+          
+          while ($true) {
+              $iteration++
+              $elapsed = (Get-Date) - $startTime
+              $uptime = "{0:dd}d {0:hh}h {0:mm}m" -f $elapsed
+              
+              # Verificar salud del servicio cada iteración
+              $rdpStatus = (Get-Service -Name TermService).Status
+              $tsStatus = if (Get-Process -Name tailscaled -ErrorAction SilentlyContinue) { "✅" } else { "❌" }
+              
+              # Log rotativo cada 5 minutos
+              Write-Host "[$((Get-Date).ToString('HH:mm:ss'))] 🟢 Activo | ⏱️  $uptime | RDP: $rdpStatus | Tailscale: $tsStatus | Iter: $iteration" -ForegroundColor Green
+              
+              # Heartbeat cada 5 minutos
+              Start-Sleep -Seconds 300
+              
+              # Cada hora mostrar recordatorio
+              if ($iteration % 12 -eq 0) {
+                  Write-Host ""
+                  Write-Host "  📊 Estado del Sistema:" -ForegroundColor Cyan
+                  Write-Host "     🖥️  IP: $env:TAILSCALE_IP" -ForegroundColor White
+                  Write-Host "     ⏰ Uptime: $uptime" -ForegroundColor White
+                  Write-Host "     👤 Usuario: RDP" -ForegroundColor White
+                  Write-Host ""
+              }
+          }
