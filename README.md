@@ -4,31 +4,13 @@
 
 Crea una máquina virtual Windows 11 gratis con 16GB RAM y 256GB de almacenamiento usando GitHub Actions. Acceso remoto seguro vía Tailscale VPN.
 
-## 🚀 Inicio Rápido
-
-1. **Configura Tailscale:**
-   - Crea cuenta en [Tailscale](https://tailscale.com/)
-   - Genera Auth Key en Settings → Keys
-
-2. **Configura el Secret:**
-   - Ve a Settings → Secrets → Actions
-   - Crea `TAILSCALE_AUTH_KEY` con tu clave
-
-3. **Crea el Workflow:**
-   - Crea `.github/workflows/rdp.yml`
-   - Copia el código completo abajo
-
-4. **Ejecuta:**
-   - Actions → RDP → Run workflow
-   - Espera 2-3 minutos
-   - Obtén credenciales en el log "Maintain Connection"
 
 ## 📋 Especificaciones
 
 - **OS:** Windows Server (latest)
 - **RAM:** 16 GB
 - **Almacenamiento:** 256 GB SSD
-- **Duración:** Hasta 60 horas
+- **Duración:** Hasta 6 horas
 
 ## 📄 Código Completo
 
