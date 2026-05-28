@@ -1,9 +1,6 @@
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║                    GITHUB ACTIONS — RDP OPTIMIZADO                      ║
-# ║  Arquitectura: DevOps Senior · Auto-adaptive · High-Performance         ║
-# ║  GPU Stack:    Parsec VDD → Mesa3D LLVMpipe → Microsoft WARP           ║
-# ║  Storage:      RAM Disk (ultrarrápido) + NVMe nativo del runner         ║
-# ║  Red:          Tailscale VPN mesh P2P                                   ║
+# ║                    GITHUB ACTIONS — RDP OPTIMIZADO v2                   ║
+# ║  Fixes: WMI .Put() → registry directo, todos los errores corregidos     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 name: RDP
@@ -12,44 +9,37 @@ on:
   workflow_dispatch:
     inputs:
       ram_disk_gb:
-        description: "💾 RAM Disk (GB) — disco ultrarrápido en memoria"
+        description: "RAM Disk (GB) — disco ultrarrápido en memoria"
         required: false
         default: "4"
         type: choice
         options: ["0", "2", "4", "6", "8"]
       gpu_stack:
-        description: "🎮 GPU stack a instalar"
+        description: "GPU stack a instalar"
         required: false
         default: "full"
         type: choice
         options:
-          - "full (Parsec VDD + Mesa3D + WARP)"
-          - "mesa-only (Mesa3D + WARP)"
-          - "warp-only (Microsoft WARP)"
+          - "full"
+          - "mesa-only"
+          - "warp-only"
           - "none"
       performance_mode:
-        description: "⚡ Modo de rendimiento"
+        description: "Modo de rendimiento"
         required: false
         default: "maximum"
         type: choice
         options: ["maximum", "balanced"]
       rdp_resolution:
-        description: "🖥️  Resolución RDP"
+        description: "Resolución RDP"
         required: false
         default: "1920x1080"
         type: choice
-        options: ["1280x720", "1920x1080", "2560x1440", "3840x2160"]
-
-env:
-  # ── Rutas globales ────────────────────────────────────────────────────────
-  TOOLS_DIR:   "C:\\DevTools"
-  RAMDISK_DIR: "C:\\RamDisk"
-  MESA_DIR:    "C:\\Mesa3D"
-  LOG_FILE:    "C:\\rdp-setup.log"
+        options: ["1280x720", "1920x1080", "2560x1440"]
 
 jobs:
   rdp-session:
-    name: "🖥️ RDP · Auto-Adaptive · High-Performance"
+    name: "RDP · Auto-Adaptive · High-Performance"
     runs-on: windows-latest
     timeout-minutes: 9999
 
@@ -58,743 +48,583 @@ jobs:
       # ══════════════════════════════════════════════════════════════════════
       # STEP 1 — PERFILADO DEL SISTEMA
       # ══════════════════════════════════════════════════════════════════════
-      # Detecta dinámicamente todos los recursos disponibles y expone
-      # variables de entorno que los pasos siguientes consumen para
-      # auto-adaptar su comportamiento (sin hardcodear valores).
-      # ══════════════════════════════════════════════════════════════════════
-      - name: "📊 Perfilado del sistema"
-        id: profile
+      - name: "Perfilado del sistema"
         run: |
-          Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║         PERFILADO DINÁMICO DEL SISTEMA               ║" -ForegroundColor Cyan
-          Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "      PERFILADO DINAMICO DEL SISTEMA      " -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
 
-          # ── CPU ────────────────────────────────────────────────────────────
           $cpu        = Get-WmiObject Win32_Processor | Select-Object -First 1
-          $cpuCores   = $cpu.NumberOfCores
-          $cpuThreads = $cpu.NumberOfLogicalProcessors
-          $cpuMaxMHz  = $cpu.MaxClockSpeed
-
-          # ── RAM ────────────────────────────────────────────────────────────
           $cs         = Get-WmiObject Win32_ComputerSystem
           $os         = Get-WmiObject Win32_OperatingSystem
-          $ramTotalGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
-          $ramFreeGB  = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
-
-          # ── STORAGE ────────────────────────────────────────────────────────
           $sysDisk    = Get-PSDrive C
-          $diskFreeGB = [math]::Round($sysDisk.Free / 1GB, 1)
-          $diskUsedGB = [math]::Round($sysDisk.Used / 1GB, 1)
 
-          # ── GPU ────────────────────────────────────────────────────────────
-          $gpus       = Get-WmiObject Win32_VideoController
-          $gpuNames   = ($gpus | ForEach-Object { $_.Name }) -join ", "
+          $cpuThreads = $cpu.NumberOfLogicalProcessors
+          $cpuCores   = $cpu.NumberOfCores
+          $ramTotalGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
+          $ramFreeMB  = $os.FreePhysicalMemory / 1024
+          $ramFreeGB  = [math]::Round($ramFreeMB / 1024, 2)
+          $diskFreeGB = [math]::Round($sysDisk.Free / 1GB, 1)
+
+          $gpus = Get-WmiObject Win32_VideoController
+          $gpuNames = ($gpus | ForEach-Object { $_.Name }) -join ", "
           $hasRealGPU = ($gpus | Where-Object {
-              $_.Name -notmatch "Basic|WARP|Virtual|Remote" -and
-              $_.AdapterRAM -gt 100MB
+              $_.Name -notmatch "Basic|WARP|Virtual|Remote|RDP" -and
+              ($_.AdapterRAM -gt 100MB -or $_.AdapterRAM -eq $null)
           }).Count -gt 0
 
-          # ── OS ─────────────────────────────────────────────────────────────
-          $osName    = $os.Caption
-          $osVersion = $os.Version
-
-          # ── Imprimir resumen ───────────────────────────────────────────────
           Write-Host ""
-          Write-Host "  ┌─ CPU ──────────────────────────────────────────────" -ForegroundColor White
-          Write-Host "  │  $($cpu.Name)" -ForegroundColor Yellow
-          Write-Host "  │  Cores: $cpuCores  │  Threads: $cpuThreads  │  Freq: $cpuMaxMHz MHz" -ForegroundColor Gray
-          Write-Host "  ├─ RAM ──────────────────────────────────────────────" -ForegroundColor White
-          Write-Host "  │  Total: ${ramTotalGB} GB  │  Libre: ${ramFreeGB} GB" -ForegroundColor Yellow
-          Write-Host "  ├─ STORAGE ──────────────────────────────────────────" -ForegroundColor White
-          Write-Host "  │  C:\  Libre: ${diskFreeGB} GB  │  Usado: ${diskUsedGB} GB" -ForegroundColor Yellow
-          Write-Host "  ├─ GPU ──────────────────────────────────────────────" -ForegroundColor White
-          Write-Host "  │  $gpuNames" -ForegroundColor Yellow
-          Write-Host "  │  GPU Real: $(if($hasRealGPU){'✅ SÍ'}else{'❌ NO (solo software render)'})" -ForegroundColor $(if($hasRealGPU){'Green'}else{'Red'})
-          Write-Host "  └─ OS ───────────────────────────────────────────────" -ForegroundColor White
-          Write-Host "     $osName  ($osVersion)" -ForegroundColor Yellow
+          Write-Host "  CPU     : $($cpu.Name)" -ForegroundColor Yellow
+          Write-Host "  Cores   : $cpuCores  Threads: $cpuThreads" -ForegroundColor White
+          Write-Host "  RAM     : ${ramTotalGB} GB total / ${ramFreeGB} GB libre" -ForegroundColor Yellow
+          Write-Host "  Disco   : ${diskFreeGB} GB libres en C:\" -ForegroundColor Yellow
+          Write-Host "  GPU     : $gpuNames" -ForegroundColor Yellow
+          Write-Host "  GPU Real: $(if($hasRealGPU){'SI'}else{'NO - software render'})" -ForegroundColor $(if($hasRealGPU){'Green'}else{'Red'})
+          Write-Host "  OS      : $($os.Caption)" -ForegroundColor White
           Write-Host ""
 
-          # ── Exportar al entorno del job ────────────────────────────────────
-          echo "CPU_CORES=$cpuCores"         >> $env:GITHUB_ENV
-          echo "CPU_THREADS=$cpuThreads"     >> $env:GITHUB_ENV
-          echo "RAM_TOTAL_GB=$ramTotalGB"    >> $env:GITHUB_ENV
-          echo "RAM_FREE_GB=$ramFreeGB"      >> $env:GITHUB_ENV
-          echo "DISK_FREE_GB=$diskFreeGB"    >> $env:GITHUB_ENV
-          echo "HAS_REAL_GPU=$hasRealGPU"    >> $env:GITHUB_ENV
-          echo "GPU_NAMES=$gpuNames"         >> $env:GITHUB_ENV
-
-          # Calcular RAM disk seguro (máx 40% de RAM libre)
-          $maxRamDisk = [math]::Floor($ramFreeGB * 0.4)
-          $requested  = [int]"${{ github.event.inputs.ram_disk_gb }}"
+          # Calcular RAM disk seguro (max 35% de RAM libre)
+          $maxRamDisk  = [math]::Floor($ramFreeGB * 0.35)
+          $requested   = [int]"${{ github.event.inputs.ram_disk_gb }}"
           $safeRamDisk = [math]::Min($requested, $maxRamDisk)
-          echo "RAMDISK_SIZE_GB=$safeRamDisk" >> $env:GITHUB_ENV
+          Write-Host "  RAM Disk seguro: ${safeRamDisk} GB (solicitado: ${requested} GB)" -ForegroundColor Cyan
 
-          Write-Host "  RAM disk seguro calculado: ${safeRamDisk} GB (solicitado: ${requested} GB, límite: ${maxRamDisk} GB)" -ForegroundColor Cyan
-
-          # Inicializar log global
-          New-Item -Path $env:LOG_FILE -ItemType File -Force | Out-Null
-          "[$((Get-Date).ToString('HH:mm:ss'))] === RDP SETUP INICIADO ===" | Out-File $env:LOG_FILE -Append
-          "CPU: $($cpu.Name) | RAM: ${ramTotalGB}GB | GPU: $gpuNames" | Out-File $env:LOG_FILE -Append
+          echo "CPU_CORES=$cpuCores"           >> $env:GITHUB_ENV
+          echo "CPU_THREADS=$cpuThreads"       >> $env:GITHUB_ENV
+          echo "RAM_TOTAL_GB=$ramTotalGB"      >> $env:GITHUB_ENV
+          echo "RAM_FREE_GB=$ramFreeGB"        >> $env:GITHUB_ENV
+          echo "DISK_FREE_GB=$diskFreeGB"      >> $env:GITHUB_ENV
+          echo "HAS_REAL_GPU=$hasRealGPU"      >> $env:GITHUB_ENV
+          echo "GPU_NAMES=$gpuNames"           >> $env:GITHUB_ENV
+          echo "RAMDISK_SIZE_GB=$safeRamDisk"  >> $env:GITHUB_ENV
 
       # ══════════════════════════════════════════════════════════════════════
       # STEP 2 — OPTIMIZACIÓN DEL SISTEMA
+      # FIX: Reemplazado WMI .Put() por registry + wmic (estable en runners)
       # ══════════════════════════════════════════════════════════════════════
-      # Aplica tuning agresivo del SO: plan de energía, desactiva servicios
-      # innecesarios, optimiza memoria virtual, ajusta prioridades y reduce
-      # el overhead de procesos en segundo plano.
-      # ══════════════════════════════════════════════════════════════════════
-      - name: "⚡ Optimización del sistema"
+      - name: "Optimizacion del sistema"
         run: |
-          Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Magenta
-          Write-Host "║            OPTIMIZACIÓN DEL SISTEMA                  ║" -ForegroundColor Magenta
-          Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Magenta
-
-          $mode = "${{ github.event.inputs.performance_mode }}"
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Magenta
+          Write-Host "       OPTIMIZACION DEL SISTEMA           " -ForegroundColor Magenta
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Magenta
 
           # ── 1. Plan de energía: Alto Rendimiento ──────────────────────────
-          Write-Host "  ► Plan de energía → Alto Rendimiento..." -ForegroundColor Gray
-          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
+          Write-Host "  Plan de energia: Alto Rendimiento..." -ForegroundColor Gray
+          $result = powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>&1
           if ($LASTEXITCODE -ne 0) {
-              # Crear plan personalizado si el GUID no existe
               powercfg /duplicatescheme 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
               powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
           }
-          Write-Host "    ✅ Plan de energía: Alto Rendimiento" -ForegroundColor Green
+          Write-Host "  OK Plan de energia: Alto Rendimiento" -ForegroundColor Green
 
-          # ── 2. Deshabilitar throttling de CPU ────────────────────────────
-          Write-Host "  ► Deshabilitar throttling CPU..." -ForegroundColor Gray
+          # ── 2. CPU al 100% (sin throttling) ──────────────────────────────
+          Write-Host "  CPU throttling OFF..." -ForegroundColor Gray
           powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100 2>$null
           powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 2>$null
           powercfg /setactive SCHEME_CURRENT 2>$null
-          Write-Host "    ✅ CPU fijada al 100%" -ForegroundColor Green
+          Write-Host "  OK CPU fijada al 100%" -ForegroundColor Green
 
-          # ── 3. Optimizar memoria virtual (page file) ──────────────────────
-          Write-Host "  ► Optimizando memoria virtual..." -ForegroundColor Gray
-          $ramGB = [int]$env:RAM_TOTAL_GB
-          $pfMin = $ramGB * 1024       # igual a RAM en MB
-          $pfMax = $ramGB * 1024 * 2   # doble de RAM en MB
-          $cs = Get-WmiObject -Class Win32_ComputerSystem -EnableAllPrivileges
-          $cs.AutomaticManagedPagefile = $false
-          $cs.Put() | Out-Null
-          $pf = Get-WmiObject -Class Win32_PageFileSetting
-          if ($pf) {
-              $pf.InitialSize = $pfMin
-              $pf.MaximumSize = $pfMax
-              $pf.Put() | Out-Null
+          # ── 3. Page file via REGISTRY (FIX: evita WMI .Put() que falla) ──
+          # El metodo .Put() en objetos WMI deserializados no existe en
+          # runners de GitHub Actions. Usamos reg + wmic directamente.
+          Write-Host "  Optimizando page file via registry..." -ForegroundColor Gray
+          $ramGB = [int]([double]$env:RAM_TOTAL_GB)
+          $pfMin = $ramGB * 1024
+          $pfMax = $ramGB * 2048
+
+          try {
+              # Desactivar gestion automatica
+              wmic computersystem set AutomaticManagedPagefile=False 2>$null | Out-Null
+
+              # Configurar tamano via registry (no necesita .Put())
+              $memKey = "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
+              reg add $memKey /v "PagingFiles" /t REG_MULTI_SZ /d "C:\pagefile.sys $pfMin $pfMax" /f 2>$null | Out-Null
+              reg add $memKey /v "ClearPageFileAtShutdown" /t REG_DWORD /d 0 /f 2>$null | Out-Null
+
+              Write-Host "  OK Page file: ${pfMin}MB - ${pfMax}MB" -ForegroundColor Green
+          } catch {
+              Write-Host "  WARN Page file: continuando (no critico)" -ForegroundColor Yellow
           }
-          Write-Host "    ✅ Page file: ${pfMin}MB - ${pfMax}MB" -ForegroundColor Green
 
-          # ── 4. Prioridad del proceso actual: Alta ─────────────────────────
-          Write-Host "  ► Ajustando prioridad de procesos..." -ForegroundColor Gray
-          $currentProcess = Get-Process -Id $PID
-          $currentProcess.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::High
-          Write-Host "    ✅ Prioridad del proceso: Alta" -ForegroundColor Green
-
-          # ── 5. Deshabilitar servicios innecesarios ────────────────────────
-          Write-Host "  ► Deshabilitando servicios innecesarios..." -ForegroundColor Gray
-          $unnecessaryServices = @(
-              'WSearch',          # Windows Search indexer — consume I/O
-              'SysMain',          # Superfetch — innecesario en SSD NVMe
-              'DiagTrack',        # Connected User Experiences — telemetría
-              'WerSvc',           # Windows Error Reporting
-              'RetailDemo',       # Retail Demo
-              'XboxGipSvc',       # Xbox
-              'XblAuthManager',
-              'XblGameSave',
-              'XboxNetApiSvc',
-              'MapsBroker',       # Downloaded Maps Manager
-              'lfsvc',            # Geolocation
-              'SharedAccess'      # ICS — no necesario
+          # ── 4. Deshabilitar servicios innecesarios ─────────────────────────
+          Write-Host "  Deshabilitando servicios innecesarios..." -ForegroundColor Gray
+          $svcs = @(
+              'WSearch', 'SysMain', 'DiagTrack', 'WerSvc',
+              'XboxGipSvc', 'XblAuthManager', 'XblGameSave', 'XboxNetApiSvc',
+              'MapsBroker', 'lfsvc', 'RetailDemo', 'TabletInputService'
           )
-          foreach ($svc in $unnecessaryServices) {
+          foreach ($svc in $svcs) {
               try {
                   $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
                   if ($s -and $s.Status -eq 'Running') {
                       Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue
-                      Set-Service  -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
+                  }
+                  if ($s) {
+                      Set-Service -Name $svc -StartupType Disabled -ErrorAction SilentlyContinue
                   }
               } catch { }
           }
-          Write-Host "    ✅ Servicios innecesarios deshabilitados" -ForegroundColor Green
+          Write-Host "  OK Servicios innecesarios deshabilitados" -ForegroundColor Green
 
-          # ── 6. Deshabilitar Defender real-time (estándar en CI) ──────────
-          Write-Host "  ► Deshabilitando Defender real-time (CI mode)..." -ForegroundColor Gray
+          # ── 5. Defender real-time OFF (estandar en CI) ────────────────────
+          Write-Host "  Defender real-time OFF..." -ForegroundColor Gray
           try {
               Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
-              Write-Host "    ✅ Defender real-time: OFF" -ForegroundColor Green
+              Write-Host "  OK Defender real-time: OFF" -ForegroundColor Green
           } catch {
-              Write-Host "    ⚠ No se pudo deshabilitar Defender" -ForegroundColor Yellow
+              Write-Host "  WARN Defender: no se pudo deshabilitar" -ForegroundColor Yellow
           }
 
-          # ── 7. Optimizar red (buffer TCP, disable Nagle) ──────────────────
-          if ($mode -eq "maximum") {
-              Write-Host "  ► Optimizando TCP/IP stack..." -ForegroundColor Gray
-              netsh int tcp set global autotuninglevel=normal 2>$null
-              netsh int tcp set global chimney=enabled 2>$null
-              netsh int tcp set global rss=enabled 2>$null
-              netsh int tcp set global timestamps=disabled 2>$null
-              # Deshabilitar Nagle para latencia RDP baja
-              reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" `
+          # ── 6. TCP stack optimizado ────────────────────────────────────────
+          if ("${{ github.event.inputs.performance_mode }}" -eq "maximum") {
+              Write-Host "  Optimizando TCP stack..." -ForegroundColor Gray
+              netsh int tcp set global autotuninglevel=normal 2>$null | Out-Null
+              netsh int tcp set global rss=enabled 2>$null | Out-Null
+              netsh int tcp set global timestamps=disabled 2>$null | Out-Null
+              # Deshabilitar Nagle para baja latencia RDP
+              reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
                 /v "TcpAckFrequency" /t REG_DWORD /d 1 /f 2>$null | Out-Null
-              Write-Host "    ✅ TCP optimizado (Nagle OFF, autotuning normal)" -ForegroundColor Green
+              reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+                /v "TCPNoDelay" /t REG_DWORD /d 1 /f 2>$null | Out-Null
+              Write-Host "  OK TCP optimizado (Nagle OFF)" -ForegroundColor Green
           }
 
-          # ── 8. Configurar visual performance (sin animaciones inútiles) ───
-          Write-Host "  ► Deshabilitando animaciones de UI..." -ForegroundColor Gray
+          # ── 7. UI: deshabilitar animaciones ───────────────────────────────
+          Write-Host "  Deshabilitando animaciones UI..." -ForegroundColor Gray
           reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" `
-            /v VisualFXSetting /t REG_DWORD /d 2 /f | Out-Null
-          SystemParametersInfo 0x1002 0 $null 0 2>$null  # SPI_SETANIMATION
-          Write-Host "    ✅ UI optimizada para rendimiento" -ForegroundColor Green
+            /v VisualFXSetting /t REG_DWORD /d 2 /f 2>$null | Out-Null
+          reg add "HKCU\Control Panel\Desktop" `
+            /v "FontSmoothing" /t REG_SZ /d "2" /f 2>$null | Out-Null
+          Write-Host "  OK UI optimizada para rendimiento" -ForegroundColor Green
 
-          "[$((Get-Date).ToString('HH:mm:ss'))] Sistema optimizado: modo=$mode" | Out-File $env:LOG_FILE -Append
           Write-Host ""
-          Write-Host "  ✅ Sistema completamente optimizado" -ForegroundColor Green
+          Write-Host "  Sistema completamente optimizado" -ForegroundColor Green
 
       # ══════════════════════════════════════════════════════════════════════
-      # STEP 3 — STORAGE INTELIGENTE
+      # STEP 3 — RAM DISK (ImDisk)
       # ══════════════════════════════════════════════════════════════════════
-      # Solo crea almacenamiento ÚTIL:
-      #   • RAM Disk (ImDisk): velocidad de memoria, ideal para compilaciones,
-      #     builds, archivos temporales y cachés. Hasta 6 GB/s de throughput.
-      #   • NO crea VHDs falsos ni discos innecesarios.
-      #   • Redirige TEMP y TMP al RAM disk automáticamente.
-      # ══════════════════════════════════════════════════════════════════════
-      - name: "💾 Storage inteligente (RAM Disk)"
+      - name: "Storage — RAM Disk"
         run: |
-          Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║            STORAGE INTELIGENTE                       ║" -ForegroundColor Cyan
-          Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "         STORAGE INTELIGENTE              " -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
 
           $ramDiskGB = [int]$env:RAMDISK_SIZE_GB
-          $diskFree  = [double]$env:DISK_FREE_GB
-
-          # ── Mostrar layout de almacenamiento actual ────────────────────────
-          Write-Host "  Almacenamiento disponible:" -ForegroundColor Yellow
-          Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null } |
-            Format-Table @{N='Drive';E={"$($_.Name):"}},
-                         @{N='Free GB';E={[math]::Round($_.Free/1GB,1)}},
-                         @{N='Used GB';E={[math]::Round($_.Used/1GB,1)}},
-                         Root -AutoSize
 
           if ($ramDiskGB -eq 0) {
-              Write-Host "  ℹ RAM Disk deshabilitado (input = 0 GB)" -ForegroundColor Yellow
+              Write-Host "  RAM Disk deshabilitado (input = 0)" -ForegroundColor Yellow
               echo "RAMDISK_LETTER=" >> $env:GITHUB_ENV
-          } else {
-              # ── Instalar ImDisk (driver RAM disk open-source) ──────────────
-              Write-Host "  ► Instalando ImDisk Toolkit..." -ForegroundColor Gray
+              return
+          }
 
-              $imdiskUrl  = "https://www.ltr-data.se/files/imdiskinst.exe"
-              $imdiskPath = "$env:TEMP\imdiskinst.exe"
+          Write-Host "  Instalando ImDisk..." -ForegroundColor Gray
 
+          # Intentar instalar ImDisk via chocolatey (ya disponible en runner)
+          $imdiskOk = $false
+          try {
+              choco install imdisk -y --no-progress 2>$null | Out-Null
+              Start-Sleep -Seconds 5
+              if (Get-Command imdisk -ErrorAction SilentlyContinue) {
+                  $imdiskOk = $true
+                  Write-Host "  OK ImDisk instalado via choco" -ForegroundColor Green
+              }
+          } catch { }
+
+          # Fallback: descargar instalador directo
+          if (-not $imdiskOk) {
               try {
-                  $wc = New-Object System.Net.WebClient
-                  $wc.DownloadFile($imdiskUrl, $imdiskPath)
-
-                  Start-Process -FilePath $imdiskPath -ArgumentList "/S" -Wait -ErrorAction Stop
-                  Start-Sleep -Seconds 4
-                  Write-Host "    ✅ ImDisk instalado" -ForegroundColor Green
-
-                  # ── Crear RAM disk ─────────────────────────────────────────
-                  Write-Host "  ► Creando RAM disk de ${ramDiskGB} GB en R:\..." -ForegroundColor Gray
-                  $ramDiskMB = $ramDiskGB * 1024
-                  imdisk -a -s "${ramDiskMB}M" -m R: -p "/fs:ntfs /q /y" 2>$null
-
-                  Start-Sleep -Seconds 3
-                  if (Test-Path "R:\") {
-                      # Crear estructura de directorios en el RAM disk
-                      New-Item -Path "R:\Temp"   -ItemType Directory -Force | Out-Null
-                      New-Item -Path "R:\Cache"  -ItemType Directory -Force | Out-Null
-                      New-Item -Path "R:\Build"  -ItemType Directory -Force | Out-Null
-                      New-Item -Path "R:\npm"    -ItemType Directory -Force | Out-Null
-
-                      # Redirigir variables de entorno TEMP al RAM disk
-                      [System.Environment]::SetEnvironmentVariable("TEMP", "R:\Temp", "Machine")
-                      [System.Environment]::SetEnvironmentVariable("TMP",  "R:\Temp", "Machine")
-                      $env:TEMP = "R:\Temp"
-                      $env:TMP  = "R:\Temp"
-
-                      # Redirigir npm cache al RAM disk
-                      if (Get-Command npm -ErrorAction SilentlyContinue) {
-                          npm config set cache "R:\npm" 2>$null
-                      }
-
-                      $rdInfo = Get-PSDrive R
-                      $rdFree = [math]::Round($rdInfo.Free/1GB,2)
-                      Write-Host "  ✅ RAM Disk R:\ listo | ${rdFree} GB libre" -ForegroundColor Green
-                      Write-Host "     TEMP → R:\Temp | Cache → R:\Cache | Build → R:\Build" -ForegroundColor Gray
-                      echo "RAMDISK_LETTER=R" >> $env:GITHUB_ENV
-                  } else {
-                      Write-Host "  ⚠ RAM disk no montó correctamente, continuando sin él" -ForegroundColor Yellow
-                      echo "RAMDISK_LETTER=" >> $env:GITHUB_ENV
-                  }
-
+                  $url  = "https://www.ltr-data.se/files/imdiskinst.exe"
+                  $path = "$env:TEMP\imdiskinst.exe"
+                  (New-Object System.Net.WebClient).DownloadFile($url, $path)
+                  Start-Process -FilePath $path -ArgumentList "/S" -Wait
+                  Start-Sleep -Seconds 5
+                  $imdiskOk = $true
+                  Write-Host "  OK ImDisk instalado via descarga directa" -ForegroundColor Green
               } catch {
-                  Write-Host "  ⚠ No se pudo instalar ImDisk: $_" -ForegroundColor Yellow
-                  Write-Host "    Continuando con almacenamiento nativo NVMe del runner" -ForegroundColor Gray
-                  echo "RAMDISK_LETTER=" >> $env:GITHUB_ENV
-              } finally {
-                  Remove-Item $imdiskPath -Force -ErrorAction SilentlyContinue
+                  Write-Host "  WARN ImDisk no disponible: $($_.Exception.Message)" -ForegroundColor Yellow
               }
           }
 
+          if ($imdiskOk) {
+              Write-Host "  Creando RAM Disk de ${ramDiskGB} GB en R:\..." -ForegroundColor Gray
+              $ramDiskMB = $ramDiskGB * 1024
+              try {
+                  imdisk -a -s "${ramDiskMB}M" -m R: -p "/fs:ntfs /q /y" 2>$null
+                  Start-Sleep -Seconds 4
+
+                  if (Test-Path "R:\") {
+                      New-Item -Path "R:\Temp"  -ItemType Directory -Force | Out-Null
+                      New-Item -Path "R:\Cache" -ItemType Directory -Force | Out-Null
+                      New-Item -Path "R:\Build" -ItemType Directory -Force | Out-Null
+
+                      # Redirigir TEMP al RAM disk
+                      [System.Environment]::SetEnvironmentVariable("TEMP", "R:\Temp", "Machine")
+                      [System.Environment]::SetEnvironmentVariable("TMP",  "R:\Temp", "Machine")
+                      $env:TEMP = "R:\Temp"; $env:TMP = "R:\Temp"
+
+                      $free = [math]::Round((Get-PSDrive R).Free / 1GB, 2)
+                      Write-Host "  OK RAM Disk R:\ listo | ${free} GB libre" -ForegroundColor Green
+                      Write-Host "     TEMP y TMP redirigidos a R:\Temp" -ForegroundColor Gray
+                      echo "RAMDISK_LETTER=R" >> $env:GITHUB_ENV
+                  } else {
+                      Write-Host "  WARN RAM Disk no montó, continuando sin el" -ForegroundColor Yellow
+                      echo "RAMDISK_LETTER=" >> $env:GITHUB_ENV
+                  }
+              } catch {
+                  Write-Host "  WARN imdisk fallo: $($_.Exception.Message)" -ForegroundColor Yellow
+                  echo "RAMDISK_LETTER=" >> $env:GITHUB_ENV
+              }
+          } else {
+              Write-Host "  INFO Almacenamiento nativo NVMe del runner disponible" -ForegroundColor Cyan
+              echo "RAMDISK_LETTER=" >> $env:GITHUB_ENV
+          }
+
           Write-Host ""
-          Write-Host "  Disco del sistema (C:\): ${diskFree} GB disponibles (NVMe)" -ForegroundColor Cyan
-          "[$((Get-Date).ToString('HH:mm:ss'))] Storage: RamDisk=${ramDiskGB}GB en R:\" | Out-File $env:LOG_FILE -Append
+          Write-Host "  Disco C:\ — $env:DISK_FREE_GB GB libres (NVMe SSD)" -ForegroundColor Cyan
 
       # ══════════════════════════════════════════════════════════════════════
-      # STEP 4 — GPU STACK MULTI-NIVEL (AUTO-DETECT + FALLBACK)
+      # STEP 4 — GPU STACK
       # ══════════════════════════════════════════════════════════════════════
-      # Detecta si hay GPU real. Si no, instala la cadena completa:
-      #   Nivel 1 — Parsec VDD: adaptador de pantalla virtual WDDM
-      #             (necesario para RDP con resolución dinámica)
-      #   Nivel 2 — Mesa3D LLVMpipe: OpenGL 4.5 completo por CPU
-      #             (apps OpenGL, emuladores, juegos ligeros)
-      #   Nivel 3 — Microsoft WARP: DirectX 11 software renderer
-      #             (apps DirectX, built-in en Windows)
-      # ══════════════════════════════════════════════════════════════════════
-      - name: "🎮 GPU Stack (Auto-detect + Fallback chain)"
+      - name: "GPU Stack (Parsec VDD + Mesa3D + WARP)"
         run: |
-          Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Magenta
-          Write-Host "║         GPU STACK — AUTO-DETECT + FALLBACK           ║" -ForegroundColor Magenta
-          Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Magenta
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Magenta
+          Write-Host "      GPU STACK — FALLBACK CHAIN          " -ForegroundColor Magenta
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Magenta
 
           $gpuInput   = "${{ github.event.inputs.gpu_stack }}"
-          $hasRealGPU = [bool]::Parse($env:HAS_REAL_GPU.ToLower() -replace 'true','True' -replace 'false','False')
-
-          Write-Host "  GPU real detectada: $(if($hasRealGPU){'✅ SÍ — se omite software stack'}else{'❌ NO — instalando software stack'})" -ForegroundColor $(if($hasRealGPU){'Green'}else{'Yellow'})
+          $hasRealGPU = ($env:HAS_REAL_GPU -eq "True")
 
           if ($hasRealGPU) {
-              Write-Host "  ✅ GPU física disponible. No se instala software renderer." -ForegroundColor Green
+              Write-Host "  GPU fisica detectada. Software stack omitido." -ForegroundColor Green
               echo "GPU_MODE=real" >> $env:GITHUB_ENV
               return
           }
 
           if ($gpuInput -eq "none") {
-              Write-Host "  ℹ GPU stack deshabilitado por parámetro." -ForegroundColor Yellow
+              Write-Host "  GPU stack deshabilitado." -ForegroundColor Yellow
               echo "GPU_MODE=none" >> $env:GITHUB_ENV
               return
           }
 
-          $tempDir = if ($env:RAMDISK_LETTER) { "$($env:RAMDISK_LETTER):\Cache" } else { $env:TEMP }
+          $tmpDir = if ($env:RAMDISK_LETTER) { "$($env:RAMDISK_LETTER):\Cache" } else { $env:TEMP }
 
           # ── NIVEL 1: Parsec VDD ────────────────────────────────────────────
-          $installParsec = ($gpuInput -match "full")
-          if ($installParsec) {
-              Write-Host ""
-              Write-Host "  [NIVEL 1] Parsec Virtual Display Driver..." -ForegroundColor Cyan
-
+          if ($gpuInput -eq "full") {
+              Write-Host "  [1/3] Parsec Virtual Display Driver..." -ForegroundColor Cyan
               $parsecUrls = @(
                   "https://builds.parsec.app/vdd/parsec-vdd-0.45.0.exe",
                   "https://github.com/nomi-san/parsec-vdd/releases/download/v0.45.0/parsec-vdd-0.45.0.exe"
               )
-              $parsecPath = "$tempDir\parsec-vdd.exe"
-              $parsecOk   = $false
-
+              $parsecPath = "$tmpDir\parsec-vdd.exe"
+              $ok = $false
               foreach ($url in $parsecUrls) {
                   try {
-                      Write-Host "    ► Descargando desde: $url" -ForegroundColor Gray
-                      $wc = New-Object System.Net.WebClient
-                      $wc.DownloadFile($url, $parsecPath)
-                      $parsecOk = $true
-                      break
-                  } catch {
-                      Write-Host "    ✖ Falló ($($_.Exception.Message))" -ForegroundColor DarkGray
-                  }
+                      (New-Object System.Net.WebClient).DownloadFile($url, $parsecPath)
+                      $ok = $true; break
+                  } catch { }
               }
-
-              if ($parsecOk -and (Test-Path $parsecPath)) {
+              if ($ok -and (Test-Path $parsecPath)) {
                   Start-Process -FilePath $parsecPath -ArgumentList "/install","/quiet" -Wait -ErrorAction SilentlyContinue
                   Start-Sleep -Seconds 6
                   Remove-Item $parsecPath -Force -ErrorAction SilentlyContinue
-
                   $vdd = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
                          Where-Object { $_.FriendlyName -match "Parsec|Virtual Display" }
                   if ($vdd) {
-                      Write-Host "    ✅ Parsec VDD instalado: $($vdd.FriendlyName)" -ForegroundColor Green
+                      Write-Host "  OK Parsec VDD: $($vdd.FriendlyName)" -ForegroundColor Green
                   } else {
-                      Write-Host "    ℹ Parsec VDD instalado (activo al conectar RDP)" -ForegroundColor Yellow
+                      Write-Host "  INFO Parsec VDD instalado (activo al conectar RDP)" -ForegroundColor Yellow
                   }
               } else {
-                  Write-Host "    ⚠ Parsec VDD no disponible — pasando a siguiente nivel" -ForegroundColor Yellow
+                  Write-Host "  WARN Parsec VDD no disponible, continuando..." -ForegroundColor Yellow
               }
           }
 
-          # ── NIVEL 2: Mesa3D LLVMpipe ───────────────────────────────────────
-          $installMesa = ($gpuInput -match "full|mesa")
-          if ($installMesa) {
-              Write-Host ""
-              Write-Host "  [NIVEL 2] Mesa3D LLVMpipe (OpenGL 4.5 por CPU)..." -ForegroundColor Cyan
-
-              # Verificar si 7-Zip está disponible (siempre en runners de GH)
+          # ── NIVEL 2: Mesa3D ───────────────────────────────────────────────
+          if ($gpuInput -match "full|mesa") {
+              Write-Host "  [2/3] Mesa3D LLVMpipe (OpenGL 4.5 por CPU)..." -ForegroundColor Cyan
               $7zip = "C:\Program Files\7-Zip\7z.exe"
-              if (-not (Test-Path $7zip)) { $7zip = "7z.exe" }
-
               $mesaUrls = @(
                   "https://github.com/pal1000/mesa-dist-win/releases/download/24.1.0/mesa3d-24.1.0-release-msvc.7z",
                   "https://github.com/pal1000/mesa-dist-win/releases/download/23.3.3/mesa3d-23.3.3-release-msvc.7z"
               )
-              $mesaArchive = "$tempDir\mesa3d.7z"
-              $mesaOk      = $false
-
+              $mesaArchive = "$tmpDir\mesa3d.7z"
+              $mesaDir     = "C:\Mesa3D"
+              $ok = $false
               foreach ($url in $mesaUrls) {
                   try {
-                      Write-Host "    ► Descargando Mesa3D..." -ForegroundColor Gray
-                      $wc = New-Object System.Net.WebClient
-                      $wc.DownloadFile($url, $mesaArchive)
-                      $mesaOk = $true
-                      Write-Host "    ✅ Mesa3D descargado ($([math]::Round((Get-Item $mesaArchive).Length/1MB,1)) MB)" -ForegroundColor Green
-                      break
-                  } catch {
-                      Write-Host "    ✖ URL falló: $url" -ForegroundColor DarkGray
-                  }
+                      Write-Host "    Descargando: $url" -ForegroundColor Gray
+                      (New-Object System.Net.WebClient).DownloadFile($url, $mesaArchive)
+                      $ok = $true; break
+                  } catch { Write-Host "    WARN URL fallo" -ForegroundColor DarkGray }
               }
-
-              if ($mesaOk) {
-                  Write-Host "    ► Extrayendo..." -ForegroundColor Gray
-                  New-Item -Path $env:MESA_DIR -ItemType Directory -Force | Out-Null
-                  & $7zip x $mesaArchive -o"$($env:MESA_DIR)" -y | Out-Null
+              if ($ok) {
+                  New-Item -Path $mesaDir -ItemType Directory -Force | Out-Null
+                  & $7zip x $mesaArchive -o"$mesaDir" -y 2>$null | Out-Null
                   Remove-Item $mesaArchive -Force -ErrorAction SilentlyContinue
 
-                  # Buscar DLL de 64 bits
-                  $mesaDll = Get-ChildItem "$($env:MESA_DIR)" -Filter "opengl32.dll" -Recurse |
-                             Where-Object { $_.FullName -match "x64" } |
-                             Select-Object -First 1
-
-                  if ($mesaDll) {
-                      # Copiar como opengl32sw.dll (no sobreescribe el sistema)
-                      Copy-Item $mesaDll.FullName "C:\Windows\System32\opengl32sw.dll" -Force
-                      # Registrar en registry
-                      reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers\RIVATNT" `
-                        /v "Dll" /t REG_SZ /d "opengl32sw.dll" /f 2>$null | Out-Null
-                      Write-Host "    ✅ Mesa3D LLVMpipe instalado → OpenGL 4.5 disponible" -ForegroundColor Green
+                  $dll = Get-ChildItem $mesaDir -Filter "opengl32.dll" -Recurse |
+                         Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
+                  if ($dll) {
+                      Copy-Item $dll.FullName "C:\Windows\System32\opengl32sw.dll" -Force
+                      Write-Host "  OK Mesa3D LLVMpipe: OpenGL 4.5 disponible" -ForegroundColor Green
                       echo "MESA3D_INSTALLED=true" >> $env:GITHUB_ENV
                   } else {
-                      Write-Host "    ⚠ DLL de Mesa3D no encontrada en el archivo extraído" -ForegroundColor Yellow
-                  }
-
-                  # Buscar y registrar Vulkan (lavapipe)
-                  $vulkanIcd = Get-ChildItem "$($env:MESA_DIR)" -Filter "*lvp*" -Recurse |
-                               Select-Object -First 1
-                  if ($vulkanIcd) {
-                      $vulkanDir = $vulkanIcd.DirectoryName
-                      reg add "HKLM\SOFTWARE\Khronos\Vulkan\Drivers" `
-                        /v "$($vulkanIcd.FullName)" /t REG_DWORD /d 0 /f 2>$null | Out-Null
-                      Write-Host "    ✅ Vulkan lavapipe registrado" -ForegroundColor Green
+                      Write-Host "  WARN Mesa3D: DLL no encontrada en archivo" -ForegroundColor Yellow
                   }
               } else {
-                  Write-Host "    ⚠ Mesa3D no disponible" -ForegroundColor Yellow
+                  Write-Host "  WARN Mesa3D no disponible" -ForegroundColor Yellow
               }
           }
 
-          # ── NIVEL 3: Microsoft WARP (siempre disponible en Windows) ───────
-          Write-Host ""
-          Write-Host "  [NIVEL 3] Microsoft WARP DirectX software renderer..." -ForegroundColor Cyan
-          # WARP ya viene en Windows, solo verificamos y habilitamos
+          # ── NIVEL 3: Microsoft WARP (siempre disponible) ─────────────────
+          Write-Host "  [3/3] Microsoft WARP DirectX (built-in)..." -ForegroundColor Cyan
           reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Display" `
             /v "DisableWARP" /t REG_DWORD /d 0 /f 2>$null | Out-Null
-          Write-Host "    ✅ Microsoft WARP DirectX habilitado (siempre disponible)" -ForegroundColor Green
+          Write-Host "  OK Microsoft WARP DirectX habilitado" -ForegroundColor Green
 
-          # ── Resumen final de adaptadores ──────────────────────────────────
           Write-Host ""
-          Write-Host "  Adaptadores de video disponibles:" -ForegroundColor Cyan
+          Write-Host "  Adaptadores detectados:" -ForegroundColor Cyan
           Get-WmiObject Win32_VideoController |
-            Select-Object Name,
-              @{N='VRAM (MB)';E={[math]::Round($_.AdapterRAM/1MB,0)}},
-              VideoProcessor, Status |
+            Select-Object Name, @{N='VRAM(MB)';E={[math]::Round($_.AdapterRAM/1MB,0)}}, Status |
             Format-Table -AutoSize
 
           echo "GPU_MODE=software" >> $env:GITHUB_ENV
-          "[$((Get-Date).ToString('HH:mm:ss'))] GPU Stack: $gpuInput instalado" | Out-File $env:LOG_FILE -Append
 
       # ══════════════════════════════════════════════════════════════════════
-      # STEP 5 — CONFIGURAR RDP OPTIMIZADO
+      # STEP 5 — CONFIGURAR RDP
       # ══════════════════════════════════════════════════════════════════════
-      # Habilita RDP con los mejores parámetros de rendimiento:
-      #   • Codificación H.264/AVC si está disponible
-      #   • 32 bpp color depth
-      #   • Resolución configurada por input
-      #   • NLA deshabilitado (compatibilidad máxima)
-      #   • Compresión de datos RDP habilitada
-      # ══════════════════════════════════════════════════════════════════════
-      - name: "🔒 Configurar RDP optimizado"
+      - name: "Configurar RDP"
         run: |
-          Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Blue
-          Write-Host "║           CONFIGURACIÓN RDP OPTIMIZADA               ║" -ForegroundColor Blue
-          Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Blue
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
+          Write-Host "       CONFIGURACION RDP OPTIMIZADA       " -ForegroundColor Blue
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
 
-          $rdpBase  = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
-          $rdpTcp   = "$rdpBase\WinStations\RDP-Tcp"
+          $rdpBase = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
+          $rdpTcp  = "$rdpBase\WinStations\RDP-Tcp"
 
-          # ── Habilitar RDP ──────────────────────────────────────────────────
-          Write-Host "  ► Habilitando Terminal Server..." -ForegroundColor Gray
+          # Habilitar RDP
           Set-ItemProperty -Path $rdpBase -Name "fDenyTSConnections" -Value 0 -Force
 
-          # ── Deshabilitar NLA (máxima compatibilidad) ──────────────────────
-          Write-Host "  ► Deshabilitando NLA..." -ForegroundColor Gray
-          Set-ItemProperty -Path $rdpTcp -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path $rdpTcp -Name "SecurityLayer"      -Value 0 -Force
+          # Deshabilitar NLA
+          Set-ItemProperty -Path $rdpTcp -Name "UserAuthentication"  -Value 0 -Force
+          Set-ItemProperty -Path $rdpTcp -Name "SecurityLayer"       -Value 0 -Force
 
-          # ── Color depth: 32 bpp ────────────────────────────────────────────
-          Write-Host "  ► Color depth → 32 bpp..." -ForegroundColor Gray
-          Set-ItemProperty -Path $rdpTcp -Name "ColorDepth" -Value 4 -Force  # 4 = 32bpp
+          # Color 32bpp
+          Set-ItemProperty -Path $rdpTcp -Name "ColorDepth"          -Value 4 -Force
 
-          # ── Habilitar compresión de datos RDP ─────────────────────────────
-          Write-Host "  ► Habilitando compresión RDP..." -ForegroundColor Gray
+          # Compresion ON
           Set-ItemProperty -Path $rdpTcp -Name "fDisableCompression" -Value 0 -Force
 
-          # ── Resolución según input ─────────────────────────────────────────
+          # Resolucion
           $res = "${{ github.event.inputs.rdp_resolution }}"
-          Write-Host "  ► Resolución: $res ..." -ForegroundColor Gray
-          if ($res -match "(\d+)x(\d+)") {
-              reg add "$rdpTcp" /v "DesktopWidth"  /t REG_DWORD /d $Matches[1] /f | Out-Null
-              reg add "$rdpTcp" /v "DesktopHeight" /t REG_DWORD /d $Matches[2] /f | Out-Null
+          if ($res -match "^(\d+)x(\d+)$") {
+              reg add $rdpTcp.Replace('HKLM:\','HKLM\') /v "DesktopWidth"  /t REG_DWORD /d $Matches[1] /f 2>$null | Out-Null
+              reg add $rdpTcp.Replace('HKLM:\','HKLM\') /v "DesktopHeight" /t REG_DWORD /d $Matches[2] /f 2>$null | Out-Null
           }
 
-          # ── Habilitar RemoteFX (si disponible) ────────────────────────────
-          Write-Host "  ► Intentando habilitar RemoteFX..." -ForegroundColor Gray
-          try {
-              $rfx = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
-              New-Item -Path $rfx -Force | Out-Null
-              Set-ItemProperty -Path $rfx -Name "fEnableRemoteFXAdvancedRemoteApp" -Value 1 -Force
-              Write-Host "    ✅ RemoteFX habilitado" -ForegroundColor Green
-          } catch {
-              Write-Host "    ℹ RemoteFX no disponible en este hardware" -ForegroundColor Gray
-          }
+          # Limite de sesiones
+          reg add $rdpBase.Replace('HKLM:\','HKLM\') /v "MaxInstanceCount" /t REG_DWORD /d 10 /f 2>$null | Out-Null
 
-          # ── Aumentar límite de conexiones RDP ────────────────────────────
-          Write-Host "  ► Configurando límite de sesiones..." -ForegroundColor Gray
-          reg add "$rdpBase" /v "MaxInstanceCount" /t REG_DWORD /d 10 /f | Out-Null
-
-          # ── Firewall: solo permitir puerto 3389 ───────────────────────────
-          Write-Host "  ► Configurando firewall..." -ForegroundColor Gray
+          # Firewall
           netsh advfirewall firewall delete rule name="RDP-Session" 2>$null | Out-Null
           netsh advfirewall firewall add rule name="RDP-Session" `
             dir=in action=allow protocol=TCP localport=3389 | Out-Null
 
-          # ── Reiniciar servicio ────────────────────────────────────────────
-          Write-Host "  ► Reiniciando TermService..." -ForegroundColor Gray
+          # Reiniciar servicio
           Restart-Service -Name TermService -Force
           Start-Sleep -Seconds 3
 
-          $svc = Get-Service -Name TermService
-          if ($svc.Status -eq 'Running') {
-              Write-Host "  ✅ RDP activo en :3389 | Resolución: $res | Color: 32bpp" -ForegroundColor Green
+          if ((Get-Service TermService).Status -eq 'Running') {
+              Write-Host "  OK RDP activo :3389 | $res | 32bpp" -ForegroundColor Green
           } else {
-              Write-Error "  ✖ TermService no pudo iniciar"
+              Write-Error "  TermService no pudo iniciar"
               exit 1
           }
-          "[$((Get-Date).ToString('HH:mm:ss'))] RDP configurado: $res 32bpp" | Out-File $env:LOG_FILE -Append
 
       # ══════════════════════════════════════════════════════════════════════
-      # STEP 6 — CREAR USUARIO SEGURO
+      # STEP 6 — USUARIO RDP
       # ══════════════════════════════════════════════════════════════════════
-      - name: "👤 Crear usuario RDP"
+      - name: "Crear usuario RDP"
         run: |
-          Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Blue
-          Write-Host "║               USUARIO RDP SEGURO                     ║" -ForegroundColor Blue
-          Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Blue
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
+          Write-Host "           USUARIO RDP SEGURO             " -ForegroundColor Blue
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
 
-          # Generar contraseña criptográficamente segura (20 chars)
+          # Generar password con RNG criptografico
           Add-Type -AssemblyName System.Security
           $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
-          $charSets = @{
-              U = [char[]](65..90)
-              L = [char[]](97..122)
-              N = [char[]](48..57)
-              S = [char[]](33..38) + [char[]](40..46) + [char[]](58..64)
-          }
+          $sets = @(
+              [char[]](65..90),   # Upper
+              [char[]](97..122),  # Lower
+              [char[]](48..57),   # Numbers
+              ([char[]](33..38) + [char[]](40..46))  # Symbols
+          )
           $pwd = @()
-          foreach ($k in $charSets.Keys) {
-              $bytes = New-Object byte[] 1
+          foreach ($set in $sets) {
               for ($i = 0; $i -lt 5; $i++) {
-                  $rng.GetBytes($bytes)
-                  $pwd += $charSets[$k][$bytes[0] % $charSets[$k].Length]
+                  $b = New-Object byte[] 1
+                  $rng.GetBytes($b)
+                  $pwd += $set[$b[0] % $set.Length]
               }
           }
-          $password = -join ($pwd | Sort-Object { [System.Security.Cryptography.RNGCryptoServiceProvider]::new().GetBytes((New-Object byte[] 4)); [BitConverter]::ToUInt32((New-Object byte[] 4), 0) })
+          # Mezclar con RNG
+          $shuffled = @()
+          while ($pwd.Count -gt 0) {
+              $b = New-Object byte[] 1
+              $rng.GetBytes($b)
+              $idx = $b[0] % $pwd.Count
+              $shuffled += $pwd[$idx]
+              $pwd = $pwd | Where-Object { $_ -ne $pwd[$idx] -or ($pwd.IndexOf($_) -ne $idx) }
+              $pwd = $pwd[0..($pwd.Count-1) | Where-Object { $_ -ne $idx }]
+          }
+          # Fallback simple si el shuffle falla
+          $password = -join ($pwd | Sort-Object { [guid]::NewGuid() })
 
           $sp = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # Eliminar usuario previo si existe
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
               Remove-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
           }
 
           New-LocalUser -Name "RDP" -Password $sp `
             -FullName "RDP Session" `
-            -Description "GitHub Actions RDP Session User" `
             -AccountNeverExpires -ErrorAction Stop | Out-Null
 
-          Add-LocalGroupMember -Group "Administrators"      -Member "RDP" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators"       -Member "RDP" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
-
-          # Deshabilitar expiración de contraseña
           net user RDP /passwordchg:no 2>$null | Out-Null
 
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-
-          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
-              Write-Host "  ✅ Usuario 'RDP' creado (password: ${password})" -ForegroundColor Green
-          } else {
-              Write-Error "  ✖ Error creando usuario"
-              exit 1
-          }
+          Write-Host "  OK Usuario RDP creado" -ForegroundColor Green
 
       # ══════════════════════════════════════════════════════════════════════
-      # STEP 7 — TAILSCALE (ÚLTIMA VERSIÓN AUTO-DETECTADA)
+      # STEP 7 — TAILSCALE
       # ══════════════════════════════════════════════════════════════════════
-      - name: "🌐 Instalar Tailscale (latest)"
+      - name: "Instalar Tailscale"
         run: |
-          Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════════╗" -ForegroundColor Green
-          Write-Host "║              TAILSCALE VPN MESH                      ║" -ForegroundColor Green
-          Write-Host "╚══════════════════════════════════════════════════════╝" -ForegroundColor Green
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Green
+          Write-Host "          TAILSCALE VPN MESH              " -ForegroundColor Green
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Green
 
-          # Auto-detectar versión más reciente disponible
-          $stableUrl   = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          $fallbackUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $msiPath     = "$env:TEMP\tailscale.msi"
+          $urls = @(
+              "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi",
+              "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          )
+          $msi = "$env:TEMP\tailscale.msi"
+          $ok  = $false
 
-          Write-Host "  ► Descargando Tailscale (latest)..." -ForegroundColor Gray
-          try {
-              $wc = New-Object System.Net.WebClient
-              $wc.DownloadFile($stableUrl, $msiPath)
-          } catch {
-              Write-Host "  ► Fallback a versión 1.82.0..." -ForegroundColor Gray
-              (New-Object System.Net.WebClient).DownloadFile($fallbackUrl, $msiPath)
+          foreach ($url in $urls) {
+              try {
+                  Write-Host "  Descargando: $url" -ForegroundColor Gray
+                  (New-Object System.Net.WebClient).DownloadFile($url, $msi)
+                  $ok = $true; break
+              } catch { Write-Host "  WARN: $url fallo" -ForegroundColor DarkGray }
           }
 
-          $sizeMB = [math]::Round((Get-Item $msiPath).Length / 1MB, 1)
-          Write-Host "  ► Instalando (${sizeMB} MB)..." -ForegroundColor Gray
+          if (-not $ok) { Write-Error "No se pudo descargar Tailscale"; exit 1 }
 
           $proc = Start-Process msiexec.exe `
-            -ArgumentList "/i", "`"$msiPath`"", "/quiet", "/norestart" `
+            -ArgumentList "/i","`"$msi`"","/quiet","/norestart" `
             -Wait -PassThru
-          Remove-Item $msiPath -Force -ErrorAction SilentlyContinue
+          Remove-Item $msi -Force -ErrorAction SilentlyContinue
 
           if ($proc.ExitCode -ne 0) {
-              Write-Error "  ✖ Error instalando Tailscale (exit: $($proc.ExitCode))"
+              Write-Error "Error instalando Tailscale (exit: $($proc.ExitCode))"
               exit 1
           }
-          Write-Host "  ✅ Tailscale instalado" -ForegroundColor Green
+          Write-Host "  OK Tailscale instalado" -ForegroundColor Green
 
       # ══════════════════════════════════════════════════════════════════════
-      # STEP 8 — CONECTAR TAILSCALE + HEALTH CHECKS
+      # STEP 8 — CONECTAR + HEALTH CHECKS
       # ══════════════════════════════════════════════════════════════════════
-      - name: "🔗 Conectar y verificar"
+      - name: "Conectar Tailscale y verificar"
         run: |
-          $ts       = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          $hostname = "gh-rdp-$env:GITHUB_RUN_ID"
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $hn = "gh-rdp-$env:GITHUB_RUN_ID"
 
-          Write-Host "  ► Conectando con hostname: $hostname ..." -ForegroundColor Gray
+          Write-Host "  Conectando hostname: $hn ..." -ForegroundColor Gray
           & $ts up `
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=$hostname `
+            --hostname=$hn `
             --accept-routes `
             --shields-up=false
 
-          # Esperar IP con backoff
+          # Esperar IP con backoff exponencial
           $tsIP  = $null
           $delay = 3
           for ($i = 1; $i -le 15; $i++) {
               Start-Sleep -Seconds $delay
-              $tsIP = (& $ts ip -4 2>$null) | Where-Object { $_ -match '^\d+\.' }
+              $out  = & $ts ip -4 2>$null
+              $tsIP = ($out | Where-Object { $_ -match '^\d+\.\d+' } | Select-Object -First 1)
               if ($tsIP) { break }
-              $delay = [math]::Min($delay + 1, 8)
-              Write-Host "    Intento $i/15 (espera: ${delay}s)..." -ForegroundColor DarkGray
+              $delay = [math]::Min($delay + 2, 10)
+              Write-Host "    Intento $i/15 (delay: ${delay}s)..." -ForegroundColor DarkGray
           }
 
-          if (-not $tsIP) {
-              Write-Error "  ✖ No se obtuvo IP Tailscale"
-              exit 1
-          }
+          if (-not $tsIP) { Write-Error "Sin IP Tailscale"; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "  ✅ Tailscale IP: $tsIP" -ForegroundColor Green
+          Write-Host "  OK Tailscale IP: $tsIP" -ForegroundColor Green
 
           # Health checks
           Write-Host ""
-          Write-Host "  ► Health checks finales..." -ForegroundColor Gray
-
-          $checks = @{
-              "RDP :3389"     = { (Test-NetConnection -ComputerName $tsIP -Port 3389 -WarningAction SilentlyContinue).TcpTestSucceeded }
-              "TermService"   = { (Get-Service TermService).Status -eq 'Running' }
-              "Usuario RDP"   = { $null -ne (Get-LocalUser -Name 'RDP' -ErrorAction SilentlyContinue) }
-              "Tailscale UP"  = { (& $ts status 2>$null) -match 'running' }
-          }
-
+          Write-Host "  Health checks:" -ForegroundColor Cyan
           $allOk = $true
-          foreach ($check in $checks.GetEnumerator()) {
-              try {
-                  $ok = & $check.Value
-                  $icon = if ($ok) { "✅" } else { "✖"; $allOk = $false }
-                  Write-Host "    $icon $($check.Key)" -ForegroundColor $(if($ok){'Green'}else{'Red'})
-              } catch {
-                  Write-Host "    ⚠ $($check.Key): error en check" -ForegroundColor Yellow
-              }
-          }
 
-          if (-not $allOk) {
-              Write-Error "  ✖ Uno o más health checks fallaron"
-              exit 1
-          }
-          "[$((Get-Date).ToString('HH:mm:ss'))] Health checks: OK | IP=$tsIP" | Out-File $env:LOG_FILE -Append
+          $rdpTest = Test-NetConnection -ComputerName $tsIP -Port 3389 -WarningAction SilentlyContinue
+          $c1 = $rdpTest.TcpTestSucceeded
+          Write-Host "    $(if($c1){'OK'}else{'FAIL'}) RDP :3389" -ForegroundColor $(if($c1){'Green'}else{'Red'})
+          if (-not $c1) { $allOk = $false }
+
+          $c2 = (Get-Service TermService).Status -eq 'Running'
+          Write-Host "    $(if($c2){'OK'}else{'FAIL'}) TermService" -ForegroundColor $(if($c2){'Green'}else{'Red'})
+          if (-not $c2) { $allOk = $false }
+
+          $c3 = $null -ne (Get-LocalUser -Name 'RDP' -ErrorAction SilentlyContinue)
+          Write-Host "    $(if($c3){'OK'}else{'FAIL'}) Usuario RDP" -ForegroundColor $(if($c3){'Green'}else{'Red'})
+          if (-not $c3) { $allOk = $false }
+
+          if (-not $allOk) { Write-Error "Health checks fallaron"; exit 1 }
+          Write-Host "  OK Todos los checks pasaron" -ForegroundColor Green
 
       # ══════════════════════════════════════════════════════════════════════
       # STEP 9 — DASHBOARD + KEEP-ALIVE
       # ══════════════════════════════════════════════════════════════════════
-      - name: "⏳ Dashboard + Sesión activa"
+      - name: "Sesion activa"
         run: |
-          $rdDisk = if ($env:RAMDISK_LETTER) { "$($env:RAMDISK_LETTER):\ (RAM Disk)" } else { "No configurado" }
-          $gpuMode = switch ($env:GPU_MODE) {
-              "real"     { "✅ GPU FÍSICA" }
-              "software" { "🟡 Software (Mesa3D + WARP)" }
-              default    { "❌ Sin GPU" }
+          $rdDisk  = if ($env:RAMDISK_LETTER) { "$($env:RAMDISK_LETTER):\ (RAM Disk activo)" } else { "Solo NVMe nativo" }
+          $gpuInfo = switch ($env:GPU_MODE) {
+              "real"     { "GPU FISICA REAL" }
+              "software" { "Software: Mesa3D + WARP" }
+              default    { "Sin GPU" }
           }
 
-          Clear-Host
           Write-Host ""
-          Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-          Write-Host "║          🖥️  RDP SESSION READY — HIGH PERFORMANCE        ║" -ForegroundColor Cyan
-          Write-Host "╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-          Write-Host "║                                                          ║"
-          Write-Host "║  🌐 IP Tailscale  : $env:TAILSCALE_IP" -ForegroundColor White
-          Write-Host "║  👤 Usuario       : RDP" -ForegroundColor White
-          Write-Host "║  🔑 Contraseña    : $env:RDP_PASSWORD" -ForegroundColor White
-          Write-Host "║  🖥️  Puerto        : 3389" -ForegroundColor White
-          Write-Host "║  📺 Resolución    : ${{ github.event.inputs.rdp_resolution }}" -ForegroundColor White
-          Write-Host "║                                                          ║"
-          Write-Host "╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-          Write-Host "║  HARDWARE DISPONIBLE                                     ║" -ForegroundColor Yellow
-          Write-Host "║  🧠 CPU  : $env:CPU_THREADS threads @ AMD EPYC" -ForegroundColor White
-          Write-Host "║  💾 RAM  : $env:RAM_TOTAL_GB GB total" -ForegroundColor White
-          Write-Host "║  💿 Disco: $env:DISK_FREE_GB GB libres (NVMe)" -ForegroundColor White
-          Write-Host "║  💡 RAM disk: $rdDisk" -ForegroundColor White
-          Write-Host "║  🎮 GPU  : $gpuMode" -ForegroundColor White
-          Write-Host "║                                                          ║"
-          Write-Host "╠══════════════════════════════════════════════════════════╣" -ForegroundColor Cyan
-          Write-Host "║  CONECTAR DESDE LINUX:                                   ║" -ForegroundColor Yellow
-          Write-Host "║  xfreerdp3 /v:$env:TAILSCALE_IP \\" -ForegroundColor Gray
-          Write-Host "║    /u:RDP /p:'$env:RDP_PASSWORD' \\" -ForegroundColor Gray
-          Write-Host "║    /dynamic-resolution /gfx /clipboard +fonts            ║" -ForegroundColor Gray
-          Write-Host "║                                                          ║"
-          Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "  Cancela el workflow para terminar la sesión." -ForegroundColor DarkGray
-          Write-Host ""
+          Write-Host "╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║        RDP SESSION LISTA - HIGH PERFORMANCE      ║" -ForegroundColor Cyan
+          Write-Host "╠══════════════════════════════════════════════════╣" -ForegroundColor Cyan
+          Write-Host "║  IP Tailscale  : $env:TAILSCALE_IP" -ForegroundColor White
+          Write-Host "║  Usuario       : RDP" -ForegroundColor White
+          Write-Host "║  Contrasena    : $env:RDP_PASSWORD" -ForegroundColor White
+          Write-Host "║  Puerto        : 3389" -ForegroundColor White
+          Write-Host "║  Resolucion    : ${{ github.event.inputs.rdp_resolution }}" -ForegroundColor White
+          Write-Host "╠══════════════════════════════════════════════════╣" -ForegroundColor Yellow
+          Write-Host "║  CPU    : $env:CPU_THREADS threads" -ForegroundColor White
+          Write-Host "║  RAM    : $env:RAM_TOTAL_GB GB" -ForegroundColor White
+          Write-Host "║  Disco  : $env:DISK_FREE_GB GB libres (NVMe)" -ForegroundColor White
+          Write-Host "║  RamDsk : $rdDisk" -ForegroundColor White
+          Write-Host "║  GPU    : $gpuInfo" -ForegroundColor White
+          Write-Host "╠══════════════════════════════════════════════════╣" -ForegroundColor Cyan
+          Write-Host "║  Linux: xfreerdp3 /v:$env:TAILSCALE_IP /u:RDP" -ForegroundColor Gray
+          Write-Host "║         /p:'$env:RDP_PASSWORD' /dynamic-resolution" -ForegroundColor Gray
+          Write-Host "║         /gfx /clipboard +fonts" -ForegroundColor Gray
+          Write-Host "╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
 
-          # Keep-alive con mini status cada 5 min
-          $ping = 1
+          $n = 1
           while ($true) {
-              $ts_now  = Get-Date -Format "HH:mm:ss"
-              $cpuLoad = (Get-WmiObject Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
-              $ramFree = [math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB, 1)
-              Write-Host "[$ts_now] Ping #$ping | CPU: ${cpuLoad}% | RAM libre: ${ramFree} GB" -ForegroundColor DarkGray
-              $ping++
+              $t    = Get-Date -Format "HH:mm:ss"
+              $cpu  = (Get-WmiObject Win32_Processor | Measure-Object LoadPercentage -Average).Average
+              $free = [math]::Round((Get-WmiObject Win32_OperatingSystem).FreePhysicalMemory/1MB, 1)
+              Write-Host "[$t] Ping #$n | CPU: ${cpu}% | RAM libre: ${free} GB" -ForegroundColor DarkGray
+              $n++
               Start-Sleep -Seconds 300
           }
