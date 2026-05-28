@@ -1,6 +1,6 @@
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║                    GITHUB ACTIONS — RDP OPTIMIZADO v3                   ║
-# ║  Fixes: WMI .Put() → registry directo, Fisher-Yates shuffle, robustez   ║
+# ║  Fixes: Fisher-Yates con Get-Random, robustez en grupos, sanitizado     ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 name: RDP
@@ -83,7 +83,6 @@ jobs:
           Write-Host "  OS      : $($os.Caption)" -ForegroundColor White
           Write-Host ""
 
-          # Calcular RAM disk seguro (max 35% de RAM libre)
           $maxRamDisk  = [math]::Floor($ramFreeGB * 0.35)
           $requested   = [int]"${{ github.event.inputs.ram_disk_gb }}"
           $safeRamDisk = [math]::Min($requested, $maxRamDisk)
@@ -100,7 +99,6 @@ jobs:
 
       # ══════════════════════════════════════════════════════════════════════
       # STEP 2 — OPTIMIZACIÓN DEL SISTEMA
-      # FIX: Reemplazado WMI .Put() por registry + wmic (estable en runners)
       # ══════════════════════════════════════════════════════════════════════
       - name: "Optimizacion del sistema"
         run: |
@@ -108,7 +106,6 @@ jobs:
           Write-Host "       OPTIMIZACION DEL SISTEMA           " -ForegroundColor Magenta
           Write-Host "══════════════════════════════════════════" -ForegroundColor Magenta
 
-          # ── 1. Plan de energía: Alto Rendimiento ──────────────────────────
           Write-Host "  Plan de energia: Alto Rendimiento..." -ForegroundColor Gray
           $result = powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>&1
           if ($LASTEXITCODE -ne 0) {
@@ -117,14 +114,12 @@ jobs:
           }
           Write-Host "  OK Plan de energia: Alto Rendimiento" -ForegroundColor Green
 
-          # ── 2. CPU al 100% (sin throttling) ──────────────────────────────
           Write-Host "  CPU throttling OFF..." -ForegroundColor Gray
           powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX 100 2>$null
           powercfg /setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMIN 100 2>$null
           powercfg /setactive SCHEME_CURRENT 2>$null
           Write-Host "  OK CPU fijada al 100%" -ForegroundColor Green
 
-          # ── 3. Page file via REGISTRY (FIX: evita WMI .Put() que falla) ──
           Write-Host "  Optimizando page file via registry..." -ForegroundColor Gray
           $ramGB = [int]([double]$env:RAM_TOTAL_GB)
           $pfMin = $ramGB * 1024
@@ -140,7 +135,6 @@ jobs:
               Write-Host "  WARN Page file: continuando (no critico)" -ForegroundColor Yellow
           }
 
-          # ── 4. Deshabilitar servicios innecesarios ─────────────────────────
           Write-Host "  Deshabilitando servicios innecesarios..." -ForegroundColor Gray
           $svcs = @(
               'WSearch', 'SysMain', 'DiagTrack', 'WerSvc',
@@ -160,7 +154,6 @@ jobs:
           }
           Write-Host "  OK Servicios innecesarios deshabilitados" -ForegroundColor Green
 
-          # ── 5. Defender real-time OFF (estandar en CI) ────────────────────
           Write-Host "  Defender real-time OFF..." -ForegroundColor Gray
           try {
               Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
@@ -169,7 +162,6 @@ jobs:
               Write-Host "  WARN Defender: no se pudo deshabilitar" -ForegroundColor Yellow
           }
 
-          # ── 6. TCP stack optimizado ────────────────────────────────────────
           if ("${{ github.event.inputs.performance_mode }}" -eq "maximum") {
               Write-Host "  Optimizando TCP stack..." -ForegroundColor Gray
               netsh int tcp set global autotuninglevel=normal 2>$null | Out-Null
@@ -180,7 +172,6 @@ jobs:
               Write-Host "  OK TCP optimizado (Nagle OFF)" -ForegroundColor Green
           }
 
-          # ── 7. UI: deshabilitar animaciones ───────────────────────────────
           Write-Host "  Deshabilitando animaciones UI..." -ForegroundColor Gray
           reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f 2>$null | Out-Null
           reg add "HKCU\Control Panel\Desktop" /v "FontSmoothing" /t REG_SZ /d "2" /f 2>$null | Out-Null
@@ -294,7 +285,6 @@ jobs:
 
           $tmpDir = if ($env:RAMDISK_LETTER) { "$($env:RAMDISK_LETTER):\Cache" } else { $env:TEMP }
 
-          # ── NIVEL 1: Parsec VDD ────────────────────────────────────────────
           if ($gpuInput -eq "full") {
               Write-Host "  [1/3] Parsec Virtual Display Driver..." -ForegroundColor Cyan
               $parsecUrls = @(
@@ -325,7 +315,6 @@ jobs:
               }
           }
 
-          # ── NIVEL 2: Mesa3D ───────────────────────────────────────────────
           if ($gpuInput -match "full|mesa") {
               Write-Host "  [2/3] Mesa3D LLVMpipe (OpenGL 4.5 por CPU)..." -ForegroundColor Cyan
               $7zip = "C:\Program Files\7-Zip\7z.exe"
@@ -362,7 +351,6 @@ jobs:
               }
           }
 
-          # ── NIVEL 3: Microsoft WARP (siempre disponible) ─────────────────
           Write-Host "  [3/3] Microsoft WARP DirectX (built-in)..." -ForegroundColor Cyan
           reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Display" /v "DisableWARP" /t REG_DWORD /d 0 /f 2>$null | Out-Null
           Write-Host "  OK Microsoft WARP DirectX habilitado" -ForegroundColor Green
@@ -387,34 +375,23 @@ jobs:
           $rdpBase = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
           $rdpTcp  = "$rdpBase\WinStations\RDP-Tcp"
 
-          # Habilitar RDP
           Set-ItemProperty -Path $rdpBase -Name "fDenyTSConnections" -Value 0 -Force
-
-          # Deshabilitar NLA
           Set-ItemProperty -Path $rdpTcp -Name "UserAuthentication"  -Value 0 -Force
           Set-ItemProperty -Path $rdpTcp -Name "SecurityLayer"       -Value 0 -Force
-
-          # Color 32bpp
           Set-ItemProperty -Path $rdpTcp -Name "ColorDepth"          -Value 4 -Force
-
-          # Compresion ON
           Set-ItemProperty -Path $rdpTcp -Name "fDisableCompression" -Value 0 -Force
 
-          # Resolucion
           $res = "${{ github.event.inputs.rdp_resolution }}"
           if ($res -match "^(\d+)x(\d+)$") {
               reg add $rdpTcp.Replace('HKLM:\','HKLM\') /v "DesktopWidth"  /t REG_DWORD /d $Matches[1] /f 2>$null | Out-Null
               reg add $rdpTcp.Replace('HKLM:\','HKLM\') /v "DesktopHeight" /t REG_DWORD /d $Matches[2] /f 2>$null | Out-Null
           }
 
-          # Limite de sesiones
           reg add $rdpBase.Replace('HKLM:\','HKLM\') /v "MaxInstanceCount" /t REG_DWORD /d 10 /f 2>$null | Out-Null
 
-          # Firewall
           netsh advfirewall firewall delete rule name="RDP-Session" 2>$null | Out-Null
           netsh advfirewall firewall add rule name="RDP-Session" dir=in action=allow protocol=TCP localport=3389 | Out-Null
 
-          # Reiniciar servicio
           Restart-Service -Name TermService -Force
           Start-Sleep -Seconds 3
 
@@ -427,7 +404,7 @@ jobs:
 
       # ══════════════════════════════════════════════════════════════════════
       # STEP 6 — USUARIO RDP
-      # FIX: Reemplazado shuffle roto por Fisher-Yates criptograficamente seguro
+      # FIX: Usa Get-Random (funciona en runners) + estructura del codigo antiguo
       # ══════════════════════════════════════════════════════════════════════
       - name: "Crear usuario RDP"
         run: |
@@ -435,52 +412,57 @@ jobs:
           Write-Host "           USUARIO RDP SEGURO             " -ForegroundColor Blue
           Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
 
-          # Generar password con RNG criptografico
-          Add-Type -AssemblyName System.Security
-          $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
-          $sets = @(
-              [char[]](65..90),   # Upper
-              [char[]](97..122),  # Lower
-              [char[]](48..57),   # Numbers
-              ([char[]](33..38) + [char[]](40..46))  # Symbols
-          )
-          $pwdChars = @()
-          foreach ($set in $sets) {
-              for ($i = 0; $i -lt 5; $i++) {
-                  $b = New-Object byte[] 1
-                  $rng.GetBytes($b)
-                  $pwdChars += $set[$b[0] % $set.Length]
-              }
+          # Generar password fuerte con Get-Random (estable en GitHub runners)
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..38) + [char[]](40..46))  # !"#$%&()*+,-./
           }
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper   | Get-Random -Count 5
+          $rawPassword += $charSet.Lower   | Get-Random -Count 5
+          $rawPassword += $charSet.Number  | Get-Random -Count 5
+          $rawPassword += $charSet.Special | Get-Random -Count 5
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
 
-          # Shuffle: Fisher-Yates (algoritmo correcto y estable)
-          for ($i = $pwdChars.Count - 1; $i -gt 0; $i--) {
-              $b = New-Object byte[] 1
-              $rng.GetBytes($b)
-              $j = $b[0] % ($i + 1)
-              # Swap elementos
-              $temp = $pwdChars[$i]
-              $pwdChars[$i] = $pwdChars[$j]
-              $pwdChars[$j] = $temp
-          }
-          $password = -join $pwdChars
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          $sp = ConvertTo-SecureString $password -AsPlainText -Force
-
+          # Crear usuario (eliminar si existe)
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
               Remove-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 1
           }
 
-          New-LocalUser -Name "RDP" -Password $sp `
-            -FullName "RDP Session" `
-            -AccountNeverExpires -ErrorAction Stop | Out-Null
-
-          Add-LocalGroupMember -Group "Administrators"       -Member "RDP" -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
-          net user RDP /passwordchg:no 2>$null | Out-Null
-
-          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+          New-LocalUser -Name "RDP" -Password $securePass -FullName "RDP Session" -AccountNeverExpires -ErrorAction Stop | Out-Null
           Write-Host "  OK Usuario RDP creado" -ForegroundColor Green
+
+          # Agregar a grupos con manejo de errores
+          try {
+              Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction Stop
+              Write-Host "  OK Agregado a Administrators" -ForegroundColor Green
+          } catch {
+              Write-Host "  WARN No se pudo agregar a Administrators: $($_.Exception.Message)" -ForegroundColor Yellow
+          }
+
+          try {
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction Stop
+              Write-Host "  OK Agregado a Remote Desktop Users" -ForegroundColor Green
+          } catch {
+              Write-Host "  WARN No se pudo agregar a Remote Desktop Users: $($_.Exception.Message)" -ForegroundColor Yellow
+          }
+
+          # Deshabilitar cambio de password
+          try {
+              net user RDP /passwordchg:no 2>$null | Out-Null
+              Write-Host "  OK Cambio de password deshabilitado" -ForegroundColor Green
+          } catch {
+              Write-Host "  WARN net user fallo (no critico)" -ForegroundColor Yellow
+          }
+
+          # Guardar credenciales
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+          Write-Host "  OK Credenciales guardadas" -ForegroundColor Green
 
       # ══════════════════════════════════════════════════════════════════════
       # STEP 7 — TAILSCALE
@@ -508,9 +490,7 @@ jobs:
 
           if (-not $ok) { Write-Error "No se pudo descargar Tailscale"; exit 1 }
 
-          $proc = Start-Process msiexec.exe `
-            -ArgumentList "/i","`"$msi`"","/quiet","/norestart" `
-            -Wait -PassThru
+          $proc = Start-Process msiexec.exe -ArgumentList "/i","`"$msi`"","/quiet","/norestart" -Wait -PassThru
           Remove-Item $msi -Force -ErrorAction SilentlyContinue
 
           if ($proc.ExitCode -ne 0) {
@@ -528,13 +508,8 @@ jobs:
           $hn = "gh-rdp-$env:GITHUB_RUN_ID"
 
           Write-Host "  Conectando hostname: $hn ..." -ForegroundColor Gray
-          & $ts up `
-            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=$hn `
-            --accept-routes `
-            --shields-up=false
+          & $ts up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hn --accept-routes --shields-up=false
 
-          # Esperar IP con backoff exponencial
           $tsIP  = $null
           $delay = 3
           for ($i = 1; $i -le 15; $i++) {
@@ -550,7 +525,6 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
           Write-Host "  OK Tailscale IP: $tsIP" -ForegroundColor Green
 
-          # Health checks
           Write-Host ""
           Write-Host "  Health checks:" -ForegroundColor Cyan
           $allOk = $true
