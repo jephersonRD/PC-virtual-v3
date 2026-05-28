@@ -1,6 +1,6 @@
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║                    GITHUB ACTIONS — RDP OPTIMIZADO v2                   ║
-# ║  Fixes: WMI .Put() → registry directo, todos los errores corregidos     ║
+# ║                    GITHUB ACTIONS — RDP OPTIMIZADO v3                   ║
+# ║  Fixes: WMI .Put() → registry directo, Fisher-Yates shuffle, robustez   ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 name: RDP
@@ -125,22 +125,16 @@ jobs:
           Write-Host "  OK CPU fijada al 100%" -ForegroundColor Green
 
           # ── 3. Page file via REGISTRY (FIX: evita WMI .Put() que falla) ──
-          # El metodo .Put() en objetos WMI deserializados no existe en
-          # runners de GitHub Actions. Usamos reg + wmic directamente.
           Write-Host "  Optimizando page file via registry..." -ForegroundColor Gray
           $ramGB = [int]([double]$env:RAM_TOTAL_GB)
           $pfMin = $ramGB * 1024
           $pfMax = $ramGB * 2048
 
           try {
-              # Desactivar gestion automatica
               wmic computersystem set AutomaticManagedPagefile=False 2>$null | Out-Null
-
-              # Configurar tamano via registry (no necesita .Put())
               $memKey = "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
               reg add $memKey /v "PagingFiles" /t REG_MULTI_SZ /d "C:\pagefile.sys $pfMin $pfMax" /f 2>$null | Out-Null
               reg add $memKey /v "ClearPageFileAtShutdown" /t REG_DWORD /d 0 /f 2>$null | Out-Null
-
               Write-Host "  OK Page file: ${pfMin}MB - ${pfMax}MB" -ForegroundColor Green
           } catch {
               Write-Host "  WARN Page file: continuando (no critico)" -ForegroundColor Yellow
@@ -181,20 +175,15 @@ jobs:
               netsh int tcp set global autotuninglevel=normal 2>$null | Out-Null
               netsh int tcp set global rss=enabled 2>$null | Out-Null
               netsh int tcp set global timestamps=disabled 2>$null | Out-Null
-              # Deshabilitar Nagle para baja latencia RDP
-              reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
-                /v "TcpAckFrequency" /t REG_DWORD /d 1 /f 2>$null | Out-Null
-              reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
-                /v "TCPNoDelay" /t REG_DWORD /d 1 /f 2>$null | Out-Null
+              reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v "TcpAckFrequency" /t REG_DWORD /d 1 /f 2>$null | Out-Null
+              reg add "HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v "TCPNoDelay" /t REG_DWORD /d 1 /f 2>$null | Out-Null
               Write-Host "  OK TCP optimizado (Nagle OFF)" -ForegroundColor Green
           }
 
           # ── 7. UI: deshabilitar animaciones ───────────────────────────────
           Write-Host "  Deshabilitando animaciones UI..." -ForegroundColor Gray
-          reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" `
-            /v VisualFXSetting /t REG_DWORD /d 2 /f 2>$null | Out-Null
-          reg add "HKCU\Control Panel\Desktop" `
-            /v "FontSmoothing" /t REG_SZ /d "2" /f 2>$null | Out-Null
+          reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" /v VisualFXSetting /t REG_DWORD /d 2 /f 2>$null | Out-Null
+          reg add "HKCU\Control Panel\Desktop" /v "FontSmoothing" /t REG_SZ /d "2" /f 2>$null | Out-Null
           Write-Host "  OK UI optimizada para rendimiento" -ForegroundColor Green
 
           Write-Host ""
@@ -219,7 +208,6 @@ jobs:
 
           Write-Host "  Instalando ImDisk..." -ForegroundColor Gray
 
-          # Intentar instalar ImDisk via chocolatey (ya disponible en runner)
           $imdiskOk = $false
           try {
               choco install imdisk -y --no-progress 2>$null | Out-Null
@@ -230,7 +218,6 @@ jobs:
               }
           } catch { }
 
-          # Fallback: descargar instalador directo
           if (-not $imdiskOk) {
               try {
                   $url  = "https://www.ltr-data.se/files/imdiskinst.exe"
@@ -257,7 +244,6 @@ jobs:
                       New-Item -Path "R:\Cache" -ItemType Directory -Force | Out-Null
                       New-Item -Path "R:\Build" -ItemType Directory -Force | Out-Null
 
-                      # Redirigir TEMP al RAM disk
                       [System.Environment]::SetEnvironmentVariable("TEMP", "R:\Temp", "Machine")
                       [System.Environment]::SetEnvironmentVariable("TMP",  "R:\Temp", "Machine")
                       $env:TEMP = "R:\Temp"; $env:TMP = "R:\Temp"
@@ -378,8 +364,7 @@ jobs:
 
           # ── NIVEL 3: Microsoft WARP (siempre disponible) ─────────────────
           Write-Host "  [3/3] Microsoft WARP DirectX (built-in)..." -ForegroundColor Cyan
-          reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Display" `
-            /v "DisableWARP" /t REG_DWORD /d 0 /f 2>$null | Out-Null
+          reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\Display" /v "DisableWARP" /t REG_DWORD /d 0 /f 2>$null | Out-Null
           Write-Host "  OK Microsoft WARP DirectX habilitado" -ForegroundColor Green
 
           Write-Host ""
@@ -427,8 +412,7 @@ jobs:
 
           # Firewall
           netsh advfirewall firewall delete rule name="RDP-Session" 2>$null | Out-Null
-          netsh advfirewall firewall add rule name="RDP-Session" `
-            dir=in action=allow protocol=TCP localport=3389 | Out-Null
+          netsh advfirewall firewall add rule name="RDP-Session" dir=in action=allow protocol=TCP localport=3389 | Out-Null
 
           # Reiniciar servicio
           Restart-Service -Name TermService -Force
@@ -443,6 +427,7 @@ jobs:
 
       # ══════════════════════════════════════════════════════════════════════
       # STEP 6 — USUARIO RDP
+      # FIX: Reemplazado shuffle roto por Fisher-Yates criptograficamente seguro
       # ══════════════════════════════════════════════════════════════════════
       - name: "Crear usuario RDP"
         run: |
@@ -459,26 +444,26 @@ jobs:
               [char[]](48..57),   # Numbers
               ([char[]](33..38) + [char[]](40..46))  # Symbols
           )
-          $pwd = @()
+          $pwdChars = @()
           foreach ($set in $sets) {
               for ($i = 0; $i -lt 5; $i++) {
                   $b = New-Object byte[] 1
                   $rng.GetBytes($b)
-                  $pwd += $set[$b[0] % $set.Length]
+                  $pwdChars += $set[$b[0] % $set.Length]
               }
           }
-          # Mezclar con RNG
-          $shuffled = @()
-          while ($pwd.Count -gt 0) {
+
+          # Shuffle: Fisher-Yates (algoritmo correcto y estable)
+          for ($i = $pwdChars.Count - 1; $i -gt 0; $i--) {
               $b = New-Object byte[] 1
               $rng.GetBytes($b)
-              $idx = $b[0] % $pwd.Count
-              $shuffled += $pwd[$idx]
-              $pwd = $pwd | Where-Object { $_ -ne $pwd[$idx] -or ($pwd.IndexOf($_) -ne $idx) }
-              $pwd = $pwd[0..($pwd.Count-1) | Where-Object { $_ -ne $idx }]
+              $j = $b[0] % ($i + 1)
+              # Swap elementos
+              $temp = $pwdChars[$i]
+              $pwdChars[$i] = $pwdChars[$j]
+              $pwdChars[$j] = $temp
           }
-          # Fallback simple si el shuffle falla
-          $password = -join ($pwd | Sort-Object { [guid]::NewGuid() })
+          $password = -join $pwdChars
 
           $sp = ConvertTo-SecureString $password -AsPlainText -Force
 
