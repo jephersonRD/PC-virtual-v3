@@ -1,0 +1,422 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+    inputs:
+      extra_disks:
+        description: "Extra virtual disks to create (además del disco del sistema)"
+        required: false
+        default: "4"
+        type: choice
+        options: ["2", "4", "6", "8"]
+      disk_size_gb:
+        description: "Tamaño de cada disco virtual (GB)"
+        required: false
+        default: "50"
+      gpu_virtual:
+        description: "Instalar GPU virtual (Parsec VDD)"
+        required: false
+        default: "true"
+        type: boolean
+
+jobs:
+  secure-rdp:
+    name: "🖥️ RDP Session"
+    runs-on: windows-latest
+    timeout-minutes: 9999
+
+    steps:
+
+      # ─────────────────────────────────────────────
+      # 1. INFORMACIÓN DEL SISTEMA
+      # ─────────────────────────────────────────────
+      - name: "📋 Información del sistema"
+        run: |
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "   SISTEMA BASE - GitHub Actions Runner   " -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
+          $cpu    = Get-WmiObject Win32_Processor | Select-Object -First 1
+          $mem    = Get-WmiObject Win32_ComputerSystem
+          $os     = Get-WmiObject Win32_OperatingSystem
+          Write-Host "  OS      : $($os.Caption) $($os.Version)" -ForegroundColor White
+          Write-Host "  CPU     : $($cpu.Name)" -ForegroundColor White
+          Write-Host "  Cores   : $($cpu.NumberOfCores) / Threads: $($cpu.NumberOfLogicalProcessors)" -ForegroundColor White
+          Write-Host "  RAM     : $([math]::Round($mem.TotalPhysicalMemory/1GB,2)) GB" -ForegroundColor White
+          Write-Host ""
+          Write-Host "  Discos detectados:" -ForegroundColor Yellow
+          Get-Disk | Format-Table Number, FriendlyName,
+            @{N='Size (GB)';E={[math]::Round($_.Size/1GB,1)}},
+            PartitionStyle, OperationalStatus -AutoSize
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
+
+      # ─────────────────────────────────────────────
+      # 2. CREAR DISCOS VIRTUALES (VHD)
+      #    Cada disco se crea, inicializa, particiona
+      #    y formatea como NTFS con letra de unidad.
+      # ─────────────────────────────────────────────
+      - name: "💾 Crear y montar discos virtuales"
+        run: |
+          $diskCount  = [int]"${{ github.event.inputs.extra_disks }}"
+          $diskSizeGB = [int]"${{ github.event.inputs.disk_size_gb }}"
+          $vhdDir     = "C:\VirtualDisks"
+
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
+          Write-Host "   CREANDO $diskCount DISCOS VIRTUALES    " -ForegroundColor Cyan
+          Write-Host "   Tamaño por disco: ${diskSizeGB} GB      " -ForegroundColor Cyan
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
+
+          New-Item -ItemType Directory -Path $vhdDir -Force | Out-Null
+
+          for ($i = 1; $i -le $diskCount; $i++) {
+              $vhdPath = "$vhdDir\VirtualDisk$i.vhd"
+              $label   = "VDisk$i"
+
+              Write-Host ""
+              Write-Host "  [Disco $i/$diskCount] Iniciando..." -ForegroundColor Yellow
+
+              # Crear VHD dinámico
+              Write-Host "    ► Creando archivo VHD ($diskSizeGB GB)..." -ForegroundColor Gray
+              New-VHD -Path $vhdPath -SizeBytes ([int64]$diskSizeGB * 1GB) -Dynamic -ErrorAction Stop | Out-Null
+
+              # Montar VHD
+              Write-Host "    ► Montando en el sistema..." -ForegroundColor Gray
+              Mount-VHD -Path $vhdPath -ErrorAction Stop
+
+              # Obtener disco sin inicializar
+              $rawDisk = Get-Disk | Where-Object { $_.PartitionStyle -eq 'RAW' } | Select-Object -First 1
+              if (-not $rawDisk) {
+                  Write-Warning "    ⚠ No se encontró disco RAW, reintentando..."
+                  Start-Sleep -Seconds 3
+                  $rawDisk = Get-Disk | Where-Object { $_.PartitionStyle -eq 'RAW' } | Select-Object -First 1
+              }
+
+              # Inicializar → GPT
+              Write-Host "    ► Inicializando (GPT)..." -ForegroundColor Gray
+              $rawDisk | Initialize-Disk -PartitionStyle GPT -PassThru | Out-Null
+
+              # Crear partición con letra automática
+              Write-Host "    ► Particionando y formateando NTFS..." -ForegroundColor Gray
+              $part = $rawDisk | New-Partition -AssignDriveLetter -UseMaximumSize
+              $part | Format-Volume -FileSystem NTFS `
+                                    -NewFileSystemLabel $label `
+                                    -Confirm:$false `
+                                    -Force | Out-Null
+
+              $letter = $part.DriveLetter
+              Write-Host "  ✅ Disco $i listo: ${letter}:\ [$label, ${diskSizeGB}GB NTFS]" -ForegroundColor Green
+          }
+
+          Write-Host ""
+          Write-Host "  Resumen de discos disponibles:" -ForegroundColor Cyan
+          Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $_.Used -ne $null } |
+            Format-Table Name,
+              @{N='Used (GB)';E={[math]::Round($_.Used/1GB,2)}},
+              @{N='Free (GB)';E={[math]::Round($_.Free/1GB,2)}} -AutoSize
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Cyan
+
+      # ─────────────────────────────────────────────
+      # 3. GPU VIRTUAL - Parsec VDD
+      #    Instala el driver de pantalla virtual de
+      #    Parsec (parsec-vdd) que expone un adaptador
+      #    gráfico virtual reconocido por Windows y
+      #    accesible vía RDP con aceleración DirectX.
+      # ─────────────────────────────────────────────
+      - name: "🎮 Instalar GPU virtual (Parsec VDD)"
+        if: ${{ github.event.inputs.gpu_virtual == 'true' }}
+        run: |
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Magenta
+          Write-Host "   INSTALANDO GPU VIRTUAL (Parsec VDD)   " -ForegroundColor Magenta
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Magenta
+
+          # Parsec Virtual Display Driver (open-source, GitHub: nomi-san/parsec-vdd)
+          # Crea un adaptador de pantalla virtual WDDM que aparece en el Administrador
+          # de dispositivos como "Parsec Virtual Display Adapter".
+          $vddUrl  = "https://github.com/nomi-san/parsec-vdd/releases/download/v0.45.0/parsec-vdd-0.45.0.exe"
+          $vddPath = "$env:TEMP\parsec-vdd.exe"
+
+          Write-Host "  ► Descargando Parsec VDD..." -ForegroundColor Gray
+          try {
+              Invoke-WebRequest -Uri $vddUrl -OutFile $vddPath -UseBasicParsing -ErrorAction Stop
+              Write-Host "    Descarga completa." -ForegroundColor Gray
+          } catch {
+              Write-Warning "  ⚠ No se pudo descargar Parsec VDD: $_"
+              Write-Host "  Continuando sin GPU virtual..." -ForegroundColor Yellow
+              exit 0
+          }
+
+          Write-Host "  ► Instalando driver silenciosamente..." -ForegroundColor Gray
+          $proc = Start-Process -FilePath $vddPath -ArgumentList "/install", "/quiet" `
+                                -Wait -PassThru -ErrorAction SilentlyContinue
+          Remove-Item $vddPath -Force -ErrorAction SilentlyContinue
+
+          Start-Sleep -Seconds 8
+
+          # Verificar que el adaptador aparece en el sistema
+          $vddAdapter = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+                        Where-Object { $_.FriendlyName -match "Parsec|Virtual Display" }
+
+          if ($vddAdapter) {
+              Write-Host "  ✅ GPU virtual instalada: $($vddAdapter.FriendlyName)" -ForegroundColor Green
+          } else {
+              Write-Host "  ℹ Driver instalado. El adaptador se activa al conectar por RDP." -ForegroundColor Yellow
+          }
+
+          # Listar todos los adaptadores de pantalla
+          Write-Host ""
+          Write-Host "  Adaptadores de pantalla detectados:" -ForegroundColor Cyan
+          Get-WmiObject Win32_VideoController |
+            Select-Object Name, AdapterRAM, VideoProcessor |
+            Format-Table -AutoSize
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Magenta
+
+      # ─────────────────────────────────────────────
+      # 4. HABILITAR Y CONFIGURAR RDP
+      #    - Activa el servicio Terminal Server
+      #    - Deshabilita NLA (permite conexión sin
+      #      autenticación previa de red, más compatible)
+      #    - Abre el puerto 3389 en el firewall
+      # ─────────────────────────────────────────────
+      - name: "🔒 Configurar RDP"
+        run: |
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
+          Write-Host "       CONFIGURANDO ACCESO RDP            " -ForegroundColor Blue
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
+
+          Write-Host "  ► Habilitando Terminal Server..." -ForegroundColor Gray
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                           -Name "fDenyTSConnections" -Value 0 -Force
+
+          Write-Host "  ► Deshabilitando NLA (Network Level Auth)..." -ForegroundColor Gray
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "SecurityLayer" -Value 0 -Force
+
+          Write-Host "  ► Configurando firewall (puerto TCP 3389)..." -ForegroundColor Gray
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389 | Out-Null
+
+          Write-Host "  ► Reiniciando servicio TermService..." -ForegroundColor Gray
+          Restart-Service -Name TermService -Force
+          Start-Sleep -Seconds 3
+
+          $svc = Get-Service -Name TermService
+          if ($svc.Status -eq 'Running') {
+              Write-Host "  ✅ Servicio RDP activo y escuchando en :3389" -ForegroundColor Green
+          } else {
+              Write-Error "  ✖ El servicio RDP no pudo iniciar."
+              exit 1
+          }
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
+
+      # ─────────────────────────────────────────────
+      # 5. CREAR USUARIO RDP
+      #    Genera una contraseña segura aleatoria
+      #    (16 chars: upper, lower, number, special)
+      #    y crea el usuario local "RDP" con permisos
+      #    de Administrador y Remote Desktop Users.
+      # ─────────────────────────────────────────────
+      - name: "👤 Crear usuario RDP seguro"
+        run: |
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
+          Write-Host "         CREANDO USUARIO RDP              " -ForegroundColor Blue
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
+
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)
+              Lower   = [char[]](97..122)
+              Number  = [char[]](48..57)
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126))
+          }
+          $rawPassword  = @()
+          $rawPassword += $charSet.Upper   | Get-Random -Count 4
+          $rawPassword += $charSet.Lower   | Get-Random -Count 4
+          $rawPassword += $charSet.Number  | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          # Eliminar usuario previo si existe
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+              Remove-LocalUser -Name "RDP"
+              Write-Host "  ► Usuario anterior eliminado." -ForegroundColor Gray
+          }
+
+          Write-Host "  ► Creando usuario 'RDP'..." -ForegroundColor Gray
+          New-LocalUser -Name "RDP" -Password $securePass `
+                        -FullName "RDP Session User" `
+                        -Description "Auto-created by GitHub Actions RDP workflow" `
+                        -AccountNeverExpires -ErrorAction Stop | Out-Null
+
+          Write-Host "  ► Agregando a Administrators..." -ForegroundColor Gray
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+
+          Write-Host "  ► Agregando a Remote Desktop Users..." -ForegroundColor Gray
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+
+          # Guardar credenciales en el entorno del job
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+          # Verificar creación
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+              Write-Host "  ✅ Usuario 'RDP' creado correctamente." -ForegroundColor Green
+          } else {
+              Write-Error "  ✖ Falló la creación del usuario."
+              exit 1
+          }
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Blue
+
+      # ─────────────────────────────────────────────
+      # 6. INSTALAR TAILSCALE
+      #    VPN mesh P2P que asigna una IP privada al
+      #    runner de GitHub, permitiendo acceso RDP
+      #    sin exponer el puerto público a Internet.
+      # ─────────────────────────────────────────────
+      - name: "🌐 Instalar Tailscale"
+        run: |
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Green
+          Write-Host "        INSTALANDO TAILSCALE VPN          " -ForegroundColor Green
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Green
+
+          $tsUrl       = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+          Write-Host "  ► Descargando Tailscale v1.82.0..." -ForegroundColor Gray
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UseBasicParsing
+          Write-Host "    Descarga completa ($([math]::Round((Get-Item $installerPath).Length/1MB,1)) MB)" -ForegroundColor Gray
+
+          Write-Host "  ► Instalando (silencioso, sin reinicio)..." -ForegroundColor Gray
+          $proc = Start-Process msiexec.exe `
+            -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" `
+            -Wait -PassThru
+          Remove-Item $installerPath -Force
+
+          if ($proc.ExitCode -eq 0) {
+              Write-Host "  ✅ Tailscale instalado correctamente." -ForegroundColor Green
+          } else {
+              Write-Error "  ✖ Error instalando Tailscale (exit code: $($proc.ExitCode))"
+              exit 1
+          }
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Green
+
+      # ─────────────────────────────────────────────
+      # 7. CONECTAR A TAILSCALE
+      #    Autentica con tu Auth Key (secret) y
+      #    asigna un hostname único basado en el run ID.
+      #    Reintenta hasta 10 veces para obtener la IP.
+      # ─────────────────────────────────────────────
+      - name: "🔗 Conectar Tailscale"
+        run: |
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Green
+          Write-Host "        ESTABLECIENDO CONEXIÓN VPN        " -ForegroundColor Green
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Green
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $hostname  = "gh-rdp-$env:GITHUB_RUN_ID"
+
+          Write-Host "  ► Autenticando con hostname: $hostname ..." -ForegroundColor Gray
+          & $tailscale up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=$hostname `
+            --accept-routes
+
+          Write-Host "  ► Esperando asignación de IP Tailscale..." -ForegroundColor Gray
+          $tsIP   = $null
+          $tries  = 0
+          $maxTry = 15
+          while (-not $tsIP -and $tries -lt $maxTry) {
+              $tries++
+              Start-Sleep -Seconds 4
+              $tsIP = & $tailscale ip -4 2>$null
+              if ($tsIP) { break }
+              Write-Host "    Intento $tries/$maxTry..." -ForegroundColor DarkGray
+          }
+
+          if (-not $tsIP) {
+              Write-Error "  ✖ No se obtuvo IP de Tailscale tras $maxTry intentos."
+              exit 1
+          }
+
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "  ✅ Tailscale conectado: IP = $tsIP" -ForegroundColor Green
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Green
+
+      # ─────────────────────────────────────────────
+      # 8. VERIFICAR CONECTIVIDAD RDP
+      #    Test-NetConnection confirma que el puerto
+      #    3389 responde en la IP de Tailscale antes
+      #    de mostrar las credenciales.
+      # ─────────────────────────────────────────────
+      - name: "🔍 Verificar conectividad RDP"
+        run: |
+          Write-Host ""
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Yellow
+          Write-Host "        VERIFICANDO ACCESO RDP            " -ForegroundColor Yellow
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Yellow
+
+          Write-Host "  ► Probando TCP $env:TAILSCALE_IP:3389 ..." -ForegroundColor Gray
+          $test = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
+
+          if ($test.TcpTestSucceeded) {
+              Write-Host "  ✅ Puerto 3389 accesible desde la VPN." -ForegroundColor Green
+          } else {
+              Write-Error "  ✖ No se pudo conectar al puerto 3389."
+              exit 1
+          }
+          Write-Host "══════════════════════════════════════════" -ForegroundColor Yellow
+
+      # ─────────────────────────────────────────────
+      # 9. MANTENER SESIÓN ACTIVA
+      #    Muestra las credenciales y mantiene vivo
+      #    el runner con pings cada 5 minutos hasta
+      #    que canceles el workflow manualmente.
+      # ─────────────────────────────────────────────
+      - name: "⏳ Sesión RDP activa"
+        run: |
+          Write-Host ""
+          Write-Host "╔══════════════════════════════════════════╗" -ForegroundColor Cyan
+          Write-Host "║           SESIÓN RDP LISTA               ║" -ForegroundColor Cyan
+          Write-Host "╠══════════════════════════════════════════╣" -ForegroundColor Cyan
+          Write-Host "║  🌐 Dirección  : $env:TAILSCALE_IP" -ForegroundColor White
+          Write-Host "║  👤 Usuario    : RDP" -ForegroundColor White
+          Write-Host "║  🔑 Contraseña : $env:RDP_PASSWORD" -ForegroundColor White
+          Write-Host "║  🖥️  Puerto    : 3389" -ForegroundColor White
+          Write-Host "╠══════════════════════════════════════════╣" -ForegroundColor Cyan
+          Write-Host "║  INSTRUCCIONES:                          ║" -ForegroundColor Yellow
+          Write-Host "║  1. Conecta tu PC a Tailscale            ║" -ForegroundColor White
+          Write-Host "║  2. Abre 'Conexión a Escritorio Remoto'  ║" -ForegroundColor White
+          Write-Host "║  3. Ingresa la IP de arriba              ║" -ForegroundColor White
+          Write-Host "║  4. Usa las credenciales mostradas       ║" -ForegroundColor White
+          Write-Host "║  5. Cancela el workflow para terminar    ║" -ForegroundColor White
+          Write-Host "╚══════════════════════════════════════════╝" -ForegroundColor Cyan
+
+          # Resumen final de discos disponibles
+          Write-Host ""
+          Write-Host "  Discos disponibles en la sesión:" -ForegroundColor Cyan
+          Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $_.Root -match '^[A-Z]:\\$' } |
+            Format-Table @{N='Unidad';E={"$($_.Name):"}},
+                         @{N='Usado GB';E={[math]::Round($_.Used/1GB,2)}},
+                         @{N='Libre GB';E={[math]::Round($_.Free/1GB,2)}},
+                         Root -AutoSize
+
+          # Loop de mantenimiento
+          $session = 1
+          while ($true) {
+              $now = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              Write-Host "[$now] [Ping #$session] RDP activo — cancela el workflow para terminar." -ForegroundColor DarkGray
+              $session++
+              Start-Sleep -Seconds 300
+          }
